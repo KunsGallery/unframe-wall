@@ -1,3 +1,8 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/* 여기에 추가적인 배경색 고정 코드를 넣으면 더 확실합니다 */
+body {
+  background-color: rgb(10, 10, 10); /* bg-neutral-950 */
+  color: white;
+  margin: 0;
+}
