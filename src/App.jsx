@@ -15,7 +15,9 @@ import {
   limit,
   deleteDoc,
   getDoc,
-  where
+  where,
+  writeBatch,
+  getDocs
 } from 'firebase/firestore';
 import { 
   getAuth, 
@@ -23,17 +25,13 @@ import {
   signInWithCustomToken,
   onAuthStateChanged 
 } from 'firebase/auth';
-import { Send, Settings, Smartphone, Monitor, Heart, Sparkles, BrainCircuit, Download, CheckCircle2, UserCircle, MessageSquare, X, Trash2, Sliders, AlertCircle } from 'lucide-react';
+import { Send, Settings, Smartphone, Monitor, Heart, Sparkles, BrainCircuit, Download, CheckCircle2, UserCircle, MessageSquare, X, Trash2, Sliders, AlertCircle, BarChart3, FileJson, History, Info } from 'lucide-react';
 
 /**
- * [환경 변수 안전 로딩 및 컴파일 오류 방지]
- * es2015 타겟 환경에서 import.meta 참조 시 발생하는 오류를 방지하기 위해 
- * 런타임 체크 및 안전한 접근 방식을 사용하여 Firebase API 키 에러를 근본적으로 차단합니다.
+ * [환경 변수 안전 로딩]
  */
 const getEnv = (key) => {
   try {
-    // Vite 빌드 시에는 import.meta.env.KEY가 실제 값으로 치환됩니다.
-    // 하지만 미리보기 환경의 정적 분석기 경고를 피하기 위해 조건부 접근을 사용합니다.
     const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
     return env[key] || "";
   } catch (e) {
@@ -54,7 +52,6 @@ const firebaseConfig = isCanvas
       appId: getEnv('VITE_FIREBASE_APP_ID')
     };
 
-// Firebase 초기화 (Safe Init)
 let app, auth, db;
 const isValidKey = isCanvas || (firebaseConfig && firebaseConfig.apiKey && firebaseConfig.apiKey.length > 10);
 
@@ -64,7 +61,7 @@ if (isValidKey) {
     auth = getAuth(app);
     db = getFirestore(app);
   } catch (e) {
-    console.error("Firebase 초기화 중 오류가 발생했습니다:", e);
+    console.error("Firebase Init Error:", e);
   }
 }
 
@@ -72,13 +69,12 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'unframe-interactive-
 const apiKey = isCanvas ? "" : getEnv('VITE_GEMINI_API_KEY');
 
 const BASE_THEMES = {
-  POSITIVE: { r: 0, g: 74, b: 173, label: 'Joy' },
-  CALM: { r: 45, g: 212, b: 191, label: 'Calm' },
-  ENERGETIC: { r: 245, g: 158, b: 11, label: 'Power' },
-  DEEP: { r: 139, g: 92, b: 246, label: 'Deep' }
+  POSITIVE: { r: 0, g: 74, b: 173, label: 'Joy', color: '#004aad' },
+  CALM: { r: 45, g: 212, b: 191, label: 'Calm', color: '#2dd4bf' },
+  ENERGETIC: { r: 245, g: 158, b: 11, label: 'Power', color: '#f59e0b' },
+  DEEP: { r: 139, g: 92, b: 246, label: 'Deep', color: '#8b5cf6' }
 };
 
-// 외부 라이브러리 동적 로드 (Confetti, html2canvas)
 const loadExternalLibs = () => {
   const libs = [
     { id: 'confetti-lib', src: "https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js" },
@@ -111,7 +107,7 @@ export default function App() {
         } else {
           await signInAnonymously(auth);
         }
-      } catch (err) { console.error("인증 처리 중 오류:", err); }
+      } catch (err) { console.error("Auth error:", err); }
     };
     initAuth();
     const unsubscribeAuth = onAuthStateChanged(auth, setUser);
@@ -122,19 +118,16 @@ export default function App() {
   useEffect(() => {
     if (!user || !db) return;
 
-    // 실시간 설정 동기화
     const settingsDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'appSettings');
     const unsubscribeSettings = onSnapshot(settingsDocRef, (docSnap) => {
       if (docSnap.exists()) setSettings(docSnap.data());
     });
 
-    // 좋아요 상태 동기화
     const likesCollection = collection(db, 'artifacts', appId, 'users', user.uid, 'user_likes');
     const unsubscribeLikes = onSnapshot(likesCollection, (snapshot) => {
       setLikedMessageIds(new Set(snapshot.docs.map(doc => doc.id)));
     });
 
-    // 메시지 데이터 동기화
     const msgCollection = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
     const unsubscribeMsgs = onSnapshot(msgCollection, (snapshot) => {
       const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -161,33 +154,41 @@ export default function App() {
   };
 
   const deleteMessage = async (msgId) => {
-    if (!db || !window.confirm("이 메시지를 삭제하시겠습니까? 전시장 화면에서도 즉시 사라집니다.")) return;
+    if (!db || !window.confirm("이 메시지를 삭제하시겠습니까?")) return;
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'messages', msgId));
     } catch (e) { console.error(e); }
   };
 
+  const clearAllMessages = async () => {
+    if (!db || !window.confirm("모든 메시지를 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다.")) return;
+    const q = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+    const snapshot = await getDocs(q);
+    const batch = writeBatch(db);
+    snapshot.docs.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+    alert("모든 데이터가 삭제되었습니다.");
+  };
+
   if (!isValidKey && !isCanvas) {
     return (
-      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-8 text-center font-sans">
-        <AlertCircle className="text-amber-500 w-16 h-16 mb-6" />
-        <h1 className="text-2xl font-bold mb-4">설정이 완료되지 않았습니다</h1>
-        <p className="text-neutral-400 mb-8 max-w-sm leading-relaxed">
-          Firebase API 키를 불러올 수 없습니다. <code className="bg-neutral-900 px-2 py-1 rounded text-amber-200">.env</code> 파일 혹은 Netlify 설정에 <code className="text-white">VITE_FIREBASE_API_KEY</code>가 정확히 입력되었는지 확인해 주세요.
-        </p>
+      <div className="min-h-screen bg-[#f3efea] text-[#004aad] flex flex-col items-center justify-center p-8 text-center font-sans">
+        <AlertCircle className="w-16 h-16 mb-6" />
+        <h1 className="text-2xl font-bold mb-4 italic">Environment Required</h1>
+        <p className="text-neutral-600 mb-8 max-w-sm">Firebase 설정이 비어있습니다.</p>
       </div>
     );
   }
 
   if (!settings) return (
-    <div className="min-h-screen bg-black flex flex-col items-center justify-center font-sans gap-4 text-white">
+    <div className="min-h-screen bg-[#f3efea] flex flex-col items-center justify-center font-sans gap-4">
       <div className="w-8 h-8 border-2 border-[#004aad] border-t-transparent rounded-full animate-spin"></div>
-      <p className="text-neutral-500 tracking-[0.3em] uppercase text-[10px]">Connecting Exhibition Network...</p>
+      <p className="text-[#004aad] tracking-[0.3em] uppercase text-[10px] font-bold">Unframe Networking...</p>
     </div>
   );
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white overflow-hidden font-sans selection:bg-[#004aad] selection:text-white">
+    <div className="min-h-screen bg-[#f3efea] text-[#111] overflow-hidden font-sans selection:bg-[#004aad] selection:text-white">
       {view === 'input' && (
         <VisitorInput 
           settings={settings.input} 
@@ -205,6 +206,7 @@ export default function App() {
           messages={messages}
           onUpdate={(s) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'appSettings'), s)} 
           onDelete={deleteMessage}
+          onClearAll={clearAllMessages}
           onBack={() => setView('display')} 
         />
       )}
@@ -213,10 +215,10 @@ export default function App() {
       
       <style>{`
         @keyframes float-down {
-          0% { transform: translateY(-120%) scale(0.9); opacity: 0; }
-          10% { opacity: 1; transform: translateY(-100%) scale(1); }
+          0% { transform: translateY(-120%); opacity: 0; }
+          10% { opacity: 1; }
           90% { opacity: 1; }
-          100% { transform: translateY(110vh) scale(0.95); opacity: 0; }
+          100% { transform: translateY(110vh); opacity: 0; }
         }
         @keyframes heart-beat {
           0%, 100% { transform: scale(1); }
@@ -240,11 +242,7 @@ function VisitorInput({ settings, messages, user, likedMessageIds, onToggleLike,
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const callGeminiAI = async (inputText) => {
-    const systemPrompt = `You are a sentiment analyzer for an art exhibition.
-    Analyze the message and give highly contrasted scores (0-100) for 4 categories.
-    Return ONLY a JSON: {"POSITIVE": score, "CALM": score, "ENERGETIC": score, "DEEP": score}.
-    The sum must be 100. DO NOT give balanced scores like 25/25/25/25.`;
-
+    const systemPrompt = `Analyze the sentiment of this art exhibition message. YOU MUST PROVIDE VARIED SCORES. Return ONLY JSON: {"POSITIVE": score, "CALM": score, "ENERGETIC": score, "DEEP": score}. Total 100.`;
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
         method: 'POST',
@@ -254,19 +252,17 @@ function VisitorInput({ settings, messages, user, likedMessageIds, onToggleLike,
           generationConfig: { responseMimeType: "application/json" }
         })
       });
-      
       if (response.ok) {
         const result = await response.json();
-        let rawContent = result.candidates[0].content.parts[0].text;
-        const cleanJson = rawContent.replace(/```json/g, "").replace(/```/g, "").trim();
-        const parsed = JSON.parse(cleanJson);
-        // 만약 AI가 중립적인 점수를 준다면 유의미한 편차(지터)를 인위적으로 추가
+        let raw = result.candidates[0].content.parts[0].text;
+        const clean = raw.replace(/```json/g, "").replace(/```/g, "").trim();
+        const parsed = JSON.parse(clean);
         if (Object.values(parsed).every(v => v === 25)) return { POSITIVE: 45, CALM: 20, ENERGETIC: 10, DEEP: 25 };
         return parsed;
       }
       throw new Error();
     } catch (err) { 
-      const r = () => Math.floor(Math.random() * 60);
+      const r = () => Math.floor(Math.random() * 50);
       return { POSITIVE: r(), CALM: r(), ENERGETIC: r(), DEEP: r() };
     }
   };
@@ -275,21 +271,18 @@ function VisitorInput({ settings, messages, user, likedMessageIds, onToggleLike,
     e.preventDefault();
     if (!text.trim() || isAnalyzing || !user) return;
     setIsAnalyzing(true);
-    
     const scores = await callGeminiAI(text);
     const msgData = {
       text,
       timestamp: serverTimestamp(),
       scores,
       likes: 0,
-      userId: user.uid,
-      posX: Math.floor(Math.random() * 80) + 10,
-      rotation: Math.floor(Math.random() * 10) - 5
+      userId: user.uid
     };
-
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), msgData);
-      onSuccess(msgData);
+      const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), msgData);
+      // 티켓 고유 ID로 사용하기 위해 문서 ID 추가
+      onSuccess({ ...msgData, id: docRef.id });
       setText('');
     } finally { setIsAnalyzing(false); }
   };
@@ -298,39 +291,33 @@ function VisitorInput({ settings, messages, user, likedMessageIds, onToggleLike,
     <div className={`flex flex-col min-h-screen p-8 max-w-md mx-auto py-16 ${settings.fontFamily}`}>
       <header className="mb-12">
         <div className="w-12 h-px bg-[#004aad] mb-6"></div>
-        <h1 className="text-3xl font-light mb-3 leading-tight">{settings.question}</h1>
-        <p className="text-neutral-500 text-[10px] tracking-[0.2em] uppercase">{settings.subtitle}</p>
+        <h1 className="text-3xl font-light mb-3 leading-tight text-[#004aad]">{settings.question}</h1>
+        <p className="text-neutral-500 text-[10px] tracking-[0.2em] uppercase font-bold">{settings.subtitle}</p>
       </header>
       
       <form onSubmit={send} className="mb-16">
         <div className="relative group">
-          <textarea 
-            value={text} 
-            onChange={(e) => setText(e.target.value)} 
-            className="w-full bg-neutral-900 border border-neutral-800 rounded-4xl p-7 h-48 focus:border-[#004aad] outline-none transition-all mb-6 text-lg font-light backdrop-blur-sm" 
-            placeholder={settings.placeholder} 
-            maxLength={150} 
-          />
+          <textarea value={text} onChange={(e) => setText(e.target.value)} className="w-full bg-white/50 border border-neutral-200 rounded-4xl p-7 h-48 focus:border-[#004aad] outline-none transition-all mb-6 text-lg font-light backdrop-blur-sm shadow-sm" placeholder={settings.placeholder} maxLength={150} />
           {isAnalyzing && (
-            <div className="absolute inset-0 bg-black/70 rounded-4xl flex flex-col items-center justify-center backdrop-blur-md z-20">
+            <div className="absolute inset-0 bg-white/70 rounded-4xl flex flex-col items-center justify-center backdrop-blur-md z-20">
               <BrainCircuit className="text-[#004aad] animate-pulse mb-3" size={32} />
-              <p className="text-[10px] font-mono tracking-widest text-neutral-400">ANALYZING MOOD...</p>
+              <p className="text-[10px] font-bold tracking-widest text-[#004aad]">ANALYZING AURA...</p>
             </div>
           )}
         </div>
-        <button disabled={!text.trim() || isAnalyzing} className="w-full bg-[#004aad] py-5 rounded-2xl font-bold flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50 transition-all shadow-xl shadow-[#004aad]/20">
-          <Send size={18} /> {isAnalyzing ? "분석 중..." : settings.buttonText}
+        <button disabled={!text.trim() || isAnalyzing} className="w-full bg-[#004aad] text-white py-5 rounded-2xl font-bold flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50 transition-all shadow-xl shadow-blue-200">
+          <Send size={18} /> {isAnalyzing ? "처리 중..." : settings.buttonText}
         </button>
       </form>
 
       <div className="space-y-5">
-        <h3 className="text-[10px] text-neutral-600 uppercase tracking-widest flex items-center gap-2 mb-6"><Sparkles size={14} className="text-[#004aad]"/> Recent Reflections</h3>
+        <h3 className="text-[10px] text-neutral-400 uppercase tracking-widest flex items-center gap-2 mb-6 font-bold"><Sparkles size={14} className="text-[#004aad]"/> Recent Traces</h3>
         {messages.map(msg => (
-          <div key={msg.id} className="bg-neutral-900/40 border border-neutral-800 p-6 rounded-3xl flex items-center justify-between transition-all hover:bg-neutral-800/60">
-            <p className="text-sm font-light text-neutral-300 pr-6 leading-relaxed">{msg.text}</p>
+          <div key={msg.id} className="bg-white/40 border border-neutral-200 p-6 rounded-3xl flex items-center justify-between transition-all hover:border-neutral-300 shadow-sm animate-in fade-in duration-500">
+            <p className="text-sm font-light text-neutral-700 pr-6 leading-relaxed">{msg.text}</p>
             <button onClick={() => onToggleLike(msg.id)} className="flex flex-col items-center gap-1 group/heart">
-              <Heart size={18} className={likedMessageIds.has(msg.id) ? "fill-[#004aad] text-[#004aad] scale-110 transition-all" : "text-neutral-600 group-hover:text-neutral-400"} />
-              <span className="text-[10px] font-mono text-neutral-500">{msg.likes || 0}</span>
+              <Heart size={18} className={likedMessageIds.has(msg.id) ? "fill-[#004aad] text-[#004aad] scale-110 transition-all" : "text-neutral-300 hover:text-neutral-400"} />
+              <span className="text-[10px] font-mono text-neutral-400 font-bold">{msg.likes || 0}</span>
             </button>
           </div>
         ))}
@@ -339,7 +326,7 @@ function VisitorInput({ settings, messages, user, likedMessageIds, onToggleLike,
   );
 }
 
-// --- Component: 전시 메인 화면 (레이어 최적화) ---
+// --- Component: 전시 메인 화면 ---
 function DisplayWall({ settings, messages }) {
   const qStyle = {
     fontSize: settings.questionSize || '72px',
@@ -347,31 +334,37 @@ function DisplayWall({ settings, messages }) {
   };
 
   return (
-    <div className={`relative w-full h-screen bg-black flex items-center justify-center`}>
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,74,173,0.12)_0%,transparent_80%)] z-0"></div>
+    <div className={`relative w-full h-screen bg-[#f3efea] flex items-center justify-center`}>
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,74,173,0.05)_0%,transparent_80%)] z-0"></div>
       
-      {/* Question Overlay (z-30: 항상 메시지보다 위에 위치) */}
-      <div className="relative z-30 text-center pointer-events-none px-12">
-        <h2 style={qStyle} className="font-light mb-10 tracking-tighter max-w-6xl leading-tight drop-shadow-[0_0_50px_rgba(0,0,0,1)] text-white">{settings.question}</h2>
-        <div className="flex items-center justify-center gap-8 text-[#004aad] opacity-80">
-          <div className="h-px w-20 bg-current"></div>
-          <p className="text-xl tracking-[0.5em] uppercase font-light italic">{settings.subtitle}</p>
-          <div className="h-px w-20 bg-current"></div>
+      <div className="relative z-30 flex flex-col items-center pointer-events-none px-12 max-w-7xl">
+        <div className="bg-[#f3efea]/90 backdrop-blur-xl p-16 rounded-[4rem] border border-[#004aad]/5 shadow-2xl shadow-[#004aad]/10 text-center animate-in fade-in zoom-in duration-1000">
+          <h2 style={qStyle} className="font-light mb-10 tracking-tighter leading-tight text-[#004aad] drop-shadow-sm">{settings.question}</h2>
+          <div className="flex items-center justify-center gap-8 text-[#004aad]/40">
+            <div className="h-px w-24 bg-current"></div>
+            <p className="text-2xl tracking-[0.4em] uppercase font-light italic">{settings.subtitle}</p>
+            <div className="h-px w-24 bg-current"></div>
+          </div>
         </div>
       </div>
 
-      {/* Messages Layer (z-10: 질문 뒤로 지나감) */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none z-10">
-        {messages.map((msg, i) => <MessageCard key={msg.id} msg={msg} index={i} />)}
+        {messages.map((msg, i) => <MessageCard key={msg.id + i} msg={msg} index={i} />)}
       </div>
 
-      <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-black to-transparent z-40 pointer-events-none"></div>
+      <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-[#f3efea] to-transparent z-40 pointer-events-none"></div>
     </div>
   );
 }
 
 function MessageCard({ msg, index }) {
   const [pulse, setPulse] = useState(false);
+  const [pos, setPos] = useState({ x: Math.random() * 80 + 10, rot: Math.random() * 10 - 5 });
+
+  const handleIteration = () => {
+    setPos({ x: Math.random() * 80 + 10, rot: Math.random() * 10 - 5 });
+  };
+
   const mixedColor = useMemo(() => {
     const s = msg.scores || { POSITIVE: 25, CALM: 25, ENERGETIC: 25, DEEP: 25 };
     const r = (s.POSITIVE * BASE_THEMES.POSITIVE.r + s.CALM * BASE_THEMES.CALM.r + s.ENERGETIC * BASE_THEMES.ENERGETIC.r + s.DEEP * BASE_THEMES.DEEP.r) / 100;
@@ -389,20 +382,29 @@ function MessageCard({ msg, index }) {
 
   return (
     <div 
-      className={`absolute p-10 rounded-4xl border border-white/5 backdrop-blur-3xl animate-float transition-all duration-700 ${pulse ? 'animate-beat z-20 brightness-125' : 'z-0'}`} 
-      style={{ left: `${msg.posX || 50}%`, animationDuration: `${28 + (index % 8) * 5}s`, animationDelay: `${(index % 15) * 1.8}s`, backgroundColor: 'rgba(10, 10, 10, 0.45)', boxShadow: `0 0 50px ${mixedColor.replace('rgb', 'rgba').replace(')', ', 0.35)')}`, transform: `rotate(${msg.rotation || 0}deg)`, maxWidth: '380px' }}
+      onAnimationIteration={handleIteration}
+      className={`absolute p-10 rounded-[2.5rem] border border-[#004aad]/5 backdrop-blur-3xl animate-float transition-all duration-700 ${pulse ? 'animate-beat z-20 brightness-110' : 'z-0'}`} 
+      style={{ 
+        left: `${pos.x}%`, 
+        animationDuration: `${28 + (index % 8) * 5}s`, 
+        animationDelay: `${(index % 15) * 1.8}s`, 
+        backgroundColor: 'rgba(255, 255, 255, 0.6)', 
+        boxShadow: `0 0 40px ${mixedColor.replace('rgb', 'rgba').replace(')', ', 0.25)')}`, 
+        transform: `rotate(${pos.rot}deg)`, 
+        maxWidth: '380px' 
+      }}
     >
-      <p className="text-2xl font-light leading-relaxed text-neutral-100 mb-8">{msg.text}</p>
-      <div className="flex items-center justify-between opacity-40">
+      <p className="text-2xl font-light leading-relaxed text-[#004aad] mb-8">{msg.text}</p>
+      <div className="flex items-center justify-between opacity-30">
         <div className="flex flex-wrap gap-2 max-w-[220px]">
           {msg.scores && Object.entries(msg.scores).sort((a,b)=>b[1]-a[1]).slice(0,2).filter(([_, v]) => v > 20).map(([k, _]) => (
             <div key={k} className="flex items-center gap-1.5">
               <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: `rgb(${BASE_THEMES[k].r}, ${BASE_THEMES[k].g}, ${BASE_THEMES[k].b})` }}></div>
-              <span className="text-[8px] font-mono tracking-widest uppercase font-light">{BASE_THEMES[k].label}</span>
+              <span className="text-[8px] font-mono tracking-widest uppercase font-bold">{BASE_THEMES[k].label}</span>
             </div>
           ))}
         </div>
-        {msg.likes > 0 && <div className="flex items-center gap-1.5 text-[#004aad] animate-in zoom-in"><Heart size={14} className="fill-current" /><span className="text-xs font-mono font-bold">{msg.likes}</span></div>}
+        {msg.likes > 0 && <div className="flex items-center gap-1.5 text-[#004aad] animate-in zoom-in font-bold font-mono text-xs"><Heart size={12} className="fill-current" />{msg.likes}</div>}
       </div>
     </div>
   );
@@ -415,13 +417,7 @@ function SuccessTicket({ data, onClose }) {
 
   useEffect(() => {
     if (window.confetti) {
-      window.confetti({ 
-        particleCount: 150, 
-        spread: 80, 
-        origin: { y: 0.75 }, 
-        colors: ['#004aad', '#ffffff', '#2dd4bf', '#8b5cf6'],
-        disableForReducedMotion: true
-      });
+      window.confetti({ particleCount: 150, spread: 80, origin: { y: 0.75 }, colors: ['#004aad', '#f3efea', '#2dd4bf', '#8b5cf6'] });
     }
   }, []);
 
@@ -430,16 +426,17 @@ function SuccessTicket({ data, onClose }) {
     setIsSaving(true);
     try {
       const canvas = await window.html2canvas(ticketRef.current, { 
-        backgroundColor: '#000000', 
-        scale: 3, 
+        backgroundColor: '#f3efea', 
+        scale: 4, 
         useCORS: true,
-        logging: false
+        logging: false,
+        allowTaint: true
       });
       const link = document.createElement('a');
-      link.download = `Unframe-Aura-Ticket-${Date.now()}.png`;
+      link.download = `Unframe-Aura-Ticket-${data.id.slice(0, 5)}.png`;
       link.href = canvas.toDataURL("image/png");
       link.click();
-    } catch (e) { console.error("티켓 저장 실패:", e); }
+    } catch (e) { console.error("Capture Failed:", e); }
     setIsSaving(false);
   };
 
@@ -452,44 +449,41 @@ function SuccessTicket({ data, onClose }) {
   }, [data]);
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/95 backdrop-blur-2xl animate-in fade-in duration-500 font-sans">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-[#f3efea]/95 backdrop-blur-2xl animate-in fade-in duration-500 font-sans">
       <div className="max-w-xs w-full flex flex-col items-center">
-        <div className="mb-8 text-center animate-in slide-in-from-top-4 duration-700">
-          <CheckCircle2 className="text-[#004aad] w-12 h-12 mx-auto mb-4 animate-bounce" />
+        <div className="mb-8 text-center animate-in slide-in-from-top-4 duration-700 text-[#004aad]">
+          <CheckCircle2 className="w-12 h-12 mx-auto mb-4 animate-bounce" />
           <h2 className="text-xl font-bold tracking-tight">생각이 전달되었습니다</h2>
           <p className="text-neutral-500 text-sm mt-1">분석된 당신의 아우라 티켓을 보관하세요.</p>
         </div>
 
-        <div ref={ticketRef} className="relative w-full bg-[#111] rounded-[2.5rem] overflow-hidden shadow-2xl border border-white/10 ticket-mask p-9 flex flex-col gap-8 text-white min-h-[420px]">
+        <div ref={ticketRef} className="relative w-full bg-white rounded-[2.5rem] overflow-hidden shadow-2xl border border-neutral-100 ticket-mask p-9 flex flex-col gap-8 text-[#004aad] min-h-[420px]">
           <div className="flex justify-between items-start">
             <div>
-              <p className="text-[9px] text-neutral-500 font-mono uppercase tracking-widest leading-none">Exhibition Identity</p>
-              <h3 className="text-2xl font-black tracking-tighter text-[#004aad] mt-1.5">UNFRAME</h3>
+              <p className="text-[9px] text-neutral-400 font-mono uppercase tracking-widest leading-none font-bold">Unframe Ticket</p>
+              <h3 className="text-2xl font-black tracking-tighter text-[#004aad] mt-1.5 italic">Aura Spectrum</h3>
             </div>
-            <div className="w-14 h-14 rounded-full blur-3xl opacity-80" style={{ backgroundColor: mixedColor }}></div>
+            <div className="w-14 h-14 rounded-full blur-3xl opacity-60" style={{ backgroundColor: mixedColor }}></div>
           </div>
-          <div className="h-px w-full border-dashed border-t border-white/20"></div>
+          <div className="h-px w-full border-dashed border-t border-neutral-100"></div>
           <div className="space-y-4">
-            <p className="text-[10px] text-neutral-600 font-mono uppercase tracking-widest">My Reflection</p>
-            <p className="text-base font-light leading-relaxed italic text-neutral-100 line-clamp-6">"{data.text}"</p>
+            <p className="text-[10px] text-neutral-400 font-mono uppercase tracking-widest font-bold">Exhibition Trace</p>
+            <p className="text-base font-light leading-relaxed italic text-neutral-800 line-clamp-6">"{data.text}"</p>
           </div>
-          <div className="mt-auto pt-8 flex justify-between items-end border-t border-white/5">
+          <div className="mt-auto pt-8 flex justify-between items-end border-t border-neutral-50">
             <div>
-              <p className="text-[8px] text-neutral-600 font-mono uppercase">User Identity (UID)</p>
-              <p className="text-[10px] text-neutral-400 font-mono truncate w-28">{data.userId}</p>
+              <p className="text-[8px] text-neutral-300 font-mono uppercase font-bold text-[#004aad]">Ticket ID</p>
+              <p className="text-[10px] text-neutral-400 font-mono font-bold">#{data.id.toUpperCase()}</p>
             </div>
-            <div className="text-right">
-              <p className="text-[8px] text-neutral-600 font-mono uppercase">Analyzed Aura</p>
-              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: mixedColor }}>Visualized</p>
-            </div>
+            <p className="text-[10px] font-black uppercase tracking-widest leading-none mb-1" style={{ color: mixedColor }}>Visualized</p>
           </div>
         </div>
 
         <div className="mt-10 flex gap-3 w-full">
-          <button onClick={saveTicket} disabled={isSaving} className="flex-1 bg-white text-black py-4 rounded-2xl font-bold flex items-center justify-center gap-2 active:scale-95 transition-all shadow-xl">
-            <Download size={18} /> {isSaving ? "저장 중..." : "이미지로 저장"}
+          <button onClick={saveTicket} disabled={isSaving} className="flex-1 bg-[#004aad] text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-2 active:scale-95 transition-all shadow-xl shadow-blue-200">
+            <Download size={18} /> {isSaving ? "처리 중..." : "이미지로 저장"}
           </button>
-          <button onClick={onClose} className="w-14 h-14 bg-neutral-800 rounded-2xl flex items-center justify-center active:scale-95 transition-all">
+          <button onClick={onClose} className="w-14 h-14 bg-white border border-neutral-100 text-neutral-400 rounded-2xl flex items-center justify-center active:scale-95 transition-all">
             <X size={24} />
           </button>
         </div>
@@ -499,112 +493,136 @@ function SuccessTicket({ data, onClose }) {
 }
 
 // --- Component: 관리자 대시보드 ---
-function AdminPanel({ settings, messages, onUpdate, onDelete, onBack }) {
+function AdminPanel({ settings, messages, onUpdate, onDelete, onClearAll, onBack }) {
   const [local, setLocal] = useState(settings);
   const [tab, setTab] = useState('settings');
 
-  const fontOptions = [{ label: 'Modern Sans', value: 'font-sans' }, { label: 'Elegant Serif', value: 'font-serif' }, { label: 'Minimal Mono', value: 'font-mono' }];
+  const stats = useMemo(() => {
+    const total = messages.length || 1;
+    const sums = { POSITIVE: 0, CALM: 0, ENERGETIC: 0, DEEP: 0 };
+    messages.forEach(m => {
+      if (m.scores) Object.keys(sums).forEach(k => sums[k] += (m.scores[k] || 0));
+    });
+    return Object.keys(sums).map(k => ({ key: k, value: Math.round(sums[k] / total) }));
+  }, [messages]);
+
+  const exportCSV = () => {
+    const headers = "ID,Content,UID,Likes,Sentiment\n";
+    const rows = messages.map(m => `"${m.id}","${m.text.replace(/"/g, '""')}","${m.userId}",${m.likes || 0},"${Object.entries(m.scores).sort((a,b)=>b[1]-a[1])[0][0]}"`).join("\n");
+    const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `Unframe-Messages-${Date.now()}.csv`;
+    link.click();
+  };
 
   const handleChange = (section, field, value) => setLocal(prev => ({ ...prev, [section]: { ...prev[section], [field]: value } }));
 
   return (
-    <div className="p-16 max-w-6xl mx-auto space-y-12 font-sans h-screen overflow-y-auto pb-40 text-neutral-300">
-      <div className="flex items-center justify-between border-b border-neutral-800 pb-10">
+    <div className="p-16 max-w-7xl mx-auto space-y-12 font-sans h-screen overflow-y-auto pb-40 text-neutral-800 animate-in fade-in duration-700">
+      <div className="flex items-center justify-between border-b border-neutral-200 pb-10">
         <div>
-          <h1 className="text-4xl font-light tracking-tight italic text-white leading-none">Management</h1>
-          <p className="text-neutral-500 text-xs tracking-widest uppercase mt-3">Exhibition Space Control</p>
+          <h1 className="text-4xl font-black tracking-tight italic text-[#004aad] leading-none">Management</h1>
+          <p className="text-neutral-400 text-xs tracking-widest uppercase mt-3 font-bold">Unframe Control Hub</p>
         </div>
         <div className="flex gap-4">
-          <div className="flex bg-neutral-900 rounded-full p-1 border border-neutral-800 backdrop-blur-lg">
-            <button onClick={() => setTab('settings')} className={`px-7 py-2.5 rounded-full text-xs font-bold transition-all ${tab === 'settings' ? 'bg-[#004aad] text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>Settings</button>
-            <button onClick={() => setTab('messages')} className={`px-7 py-2.5 rounded-full text-xs font-bold transition-all ${tab === 'messages' ? 'bg-[#004aad] text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>Messages</button>
+          <div className="flex bg-white rounded-full p-1 border border-neutral-200 shadow-sm">
+            <button onClick={() => setTab('settings')} className={`px-7 py-2.5 rounded-full text-xs font-bold transition-all ${tab === 'settings' ? 'bg-[#004aad] text-white' : 'text-neutral-400 hover:text-[#004aad]'}`}>Settings</button>
+            <button onClick={() => setTab('messages')} className={`px-7 py-2.5 rounded-full text-xs font-bold transition-all ${tab === 'messages' ? 'bg-[#004aad] text-white' : 'text-neutral-400 hover:text-[#004aad]'}`}>Database</button>
           </div>
-          <button onClick={onBack} className="px-6 py-2.5 border border-neutral-700 rounded-full text-xs font-medium hover:bg-neutral-800 transition-all uppercase tracking-widest">Back</button>
+          <button onClick={onBack} className="px-6 py-2.5 border border-neutral-200 bg-white rounded-full text-xs font-bold text-neutral-400 hover:text-[#004aad] transition-all uppercase tracking-widest">Exit</button>
         </div>
       </div>
 
       {tab === 'settings' ? (
-        <div className="grid md:grid-cols-2 gap-10 animate-in fade-in duration-500">
-          <div className="bg-neutral-900/40 p-10 rounded-[3rem] border border-neutral-800 space-y-10 backdrop-blur-sm">
-            <div className="flex items-center gap-3 text-[#004aad] border-b border-neutral-800 pb-4">
-              <Monitor size={18}/>
-              <h2 className="text-xs font-bold uppercase tracking-widest">Wall Display</h2>
-            </div>
+        <div className="grid md:grid-cols-3 gap-10">
+          {/* Wall Control */}
+          <div className="md:col-span-2 bg-white/60 p-10 rounded-[3rem] border border-neutral-100 shadow-xl space-y-10">
+            <h2 className="text-[#004aad] text-xs font-bold uppercase tracking-widest border-b border-neutral-100 pb-4 flex items-center gap-2 font-black"><Monitor size={14}/> Wall Display</h2>
             <AdminField label="Main Question" value={local.display.question} onChange={v => handleChange('display', 'question', v)} />
-            
-            <div className="space-y-4">
-               <label className="text-[10px] text-neutral-600 uppercase tracking-widest font-bold ml-1 flex justify-between">
-                 Font Size (px) <span>{local.display.questionSize}</span>
-               </label>
-               <div className="flex gap-4 items-center font-sans">
-                 <input 
-                   type="range" min="30" max="150" step="1"
-                   value={parseInt(local.display.questionSize) || 72}
-                   onChange={e => handleChange('display', 'questionSize', `${e.target.value}px`)}
-                   className="flex-1 h-1.5 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-[#004aad]"
-                 />
-                 <input 
-                   type="text" value={local.display.questionSize}
-                   onChange={e => handleChange('display', 'questionSize', e.target.value)}
-                   className="w-20 bg-black border border-neutral-800 p-2.5 rounded-xl text-xs text-center font-mono"
-                 />
-               </div>
+            <div className="grid grid-cols-2 gap-8">
+              <div className="space-y-4">
+                 <label className="text-[10px] text-neutral-400 uppercase tracking-widest font-bold flex justify-between">Font Size <span>{local.display.questionSize}</span></label>
+                 <div className="flex gap-4 items-center font-sans">
+                   <input type="range" min="30" max="150" value={parseInt(local.display.questionSize) || 72} onChange={e => handleChange('display', 'questionSize', `${e.target.value}px`)} className="flex-1 h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer accent-[#004aad]" />
+                 </div>
+              </div>
+              <AdminField label="Subtitle" value={local.display.subtitle} onChange={v => handleChange('display', 'subtitle', v)} />
             </div>
-            
-            <AdminSelect label="Font Style" options={fontOptions} value={local.display.fontFamily} onChange={v => handleChange('display', 'fontFamily', v)} />
-            <AdminField label="Bottom Subtitle" value={local.display.subtitle} onChange={v => handleChange('display', 'subtitle', v)} />
+            <div className="bg-[#f3efea]/50 p-8 rounded-3xl space-y-4">
+              <h3 className="text-[10px] font-bold uppercase text-[#004aad] flex items-center gap-2"><BarChart3 size={14} /> Global Aura Analytics</h3>
+              <div className="flex items-end gap-3 h-24 pt-4">
+                {stats.map(s => (
+                  <div key={s.key} className="flex-1 flex flex-col items-center gap-2 group">
+                    <div className="w-full bg-[#004aad]/10 rounded-lg relative overflow-hidden" style={{ height: `${s.value}%` }}>
+                      <div className="absolute inset-0 opacity-40" style={{ backgroundColor: BASE_THEMES[s.key].color }}></div>
+                    </div>
+                    <span className="text-[8px] font-bold text-neutral-400 uppercase tracking-tighter">{s.key} {s.value}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
 
-          <div className="bg-neutral-900/40 p-10 rounded-[3rem] border border-neutral-800 space-y-10 backdrop-blur-sm">
-            <div className="flex items-center gap-3 text-emerald-500 border-b border-neutral-800 pb-4">
-              <Smartphone size={18}/>
-              <h2 className="text-xs font-bold uppercase tracking-widest">Visitor Interface</h2>
+          {/* Visitor App Control */}
+          <div className="bg-white/60 p-10 rounded-[3rem] border border-neutral-100 shadow-xl space-y-8 flex flex-col justify-between">
+            <div className="space-y-8">
+              <h2 className="text-emerald-600 text-xs font-bold uppercase tracking-widest border-b border-neutral-100 pb-4 flex items-center gap-2 font-black"><Smartphone size={14}/> Visitor Interface</h2>
+              <AdminField label="App Title" value={local.input.question} onChange={v => handleChange('input', 'question', v)} />
+              <AdminField label="Description" value={local.input.subtitle} onChange={v => handleChange('input', 'subtitle', v)} />
+              <AdminField label="Button Text" value={local.input.buttonText} onChange={v => handleChange('input', 'buttonText', v)} />
             </div>
-            <AdminField label="App Title" value={local.input.question} onChange={v => handleChange('input', 'question', v)} />
-            <AdminField label="Description" value={local.input.subtitle} onChange={v => handleChange('input', 'subtitle', v)} />
-            <AdminField label="Placeholder" value={local.input.placeholder} onChange={v => handleChange('input', 'placeholder', v)} />
-            <AdminField label="Button Text" value={local.input.buttonText} onChange={v => handleChange('input', 'buttonText', v)} />
-            <button onClick={async () => { await onUpdate(local); alert('모든 설정이 업데이트되었습니다.'); }} className="w-full bg-[#004aad] py-6 rounded-[2rem] font-bold text-xl hover:brightness-110 active:scale-[0.98] transition-all shadow-2xl shadow-[#004aad]/30 uppercase tracking-widest">Deploy Config</button>
+            <button onClick={async () => { await onUpdate(local); alert('Updated!'); }} className="w-full bg-[#004aad] text-white py-6 rounded-[2rem] font-bold text-xl hover:brightness-110 active:scale-[0.98] transition-all shadow-2xl shadow-blue-100 uppercase tracking-widest">Apply Config</button>
           </div>
         </div>
       ) : (
-        <div className="space-y-6 animate-in fade-in duration-500">
+        <div className="space-y-6">
           <div className="flex justify-between items-end">
-            <h2 className="text-xl font-bold text-white flex items-center gap-3 font-sans"><MessageSquare className="text-[#004aad]" /> Message Feed ({messages.length})</h2>
-            <p className="text-[10px] text-neutral-600 uppercase tracking-widest">당첨자 확인 시 Identity UID를 대조하세요.</p>
+            <h2 className="text-xl font-black text-[#004aad] flex items-center gap-3 font-sans"><MessageSquare size={20} /> Collected Traces ({messages.length})</h2>
+            <div className="flex gap-3">
+              <button onClick={exportCSV} className="flex items-center gap-2 px-5 py-2.5 bg-neutral-800 text-white rounded-full text-xs font-bold hover:bg-neutral-900 transition-all"><Download size={14} /> Export CSV</button>
+              <button onClick={onClearAll} className="flex items-center gap-2 px-5 py-2.5 bg-red-500 text-white rounded-full text-xs font-bold hover:bg-red-600 transition-all"><History size={14} /> Reset DB</button>
+            </div>
           </div>
-          <div className="bg-neutral-900/50 rounded-[2.5rem] border border-neutral-800 overflow-hidden backdrop-blur-md">
+          <div className="bg-white/80 rounded-[2.5rem] border border-neutral-100 shadow-xl overflow-hidden backdrop-blur-md">
             <table className="w-full text-left text-sm border-collapse">
-              <thead className="bg-black/40 text-neutral-500 text-[10px] uppercase font-mono border-b border-neutral-800">
+              <thead className="bg-neutral-50 text-neutral-400 text-[10px] uppercase font-bold border-b border-neutral-100">
                 <tr>
-                  <th className="p-6 font-bold">Content</th>
-                  <th className="p-6 font-bold">Identity (UID)</th>
-                  <th className="p-6 font-bold">Analysis</th>
-                  <th className="p-6 font-bold">Likes</th>
-                  <th className="p-6 text-center font-bold">Action</th>
+                  <th className="p-6">Content</th>
+                  <th className="p-6">User ID / Verification ID</th>
+                  <th className="p-6">Aura Status</th>
+                  <th className="p-6">Engagement</th>
+                  <th className="p-6 text-center">Manage</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-neutral-800/40">
+              <tbody className="divide-y divide-neutral-50">
                 {messages.map(msg => (
-                  <tr key={msg.id} className="hover:bg-white/[0.03] transition-colors group font-sans">
-                    <td className="p-6 text-neutral-200 leading-relaxed max-w-sm font-light">{msg.text}</td>
-                    <td className="p-6 font-mono text-[10px] text-[#004aad] opacity-80">{msg.userId}</td>
+                  <tr key={msg.id} className="hover:bg-[#004aad]/[0.02] transition-colors group font-sans text-neutral-600">
+                    <td className="p-6 leading-relaxed max-w-sm font-medium">{msg.text}</td>
+                    <td className="p-6 font-mono text-[10px]">
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[#004aad] font-bold">UID: {msg.userId}</span>
+                        <span className="text-neutral-300 font-bold">Ticket: #{msg.id.toUpperCase()}</span>
+                      </div>
+                    </td>
                     <td className="p-6">
                       <div className="flex flex-wrap gap-1.5">
                         {msg.scores && Object.entries(msg.scores).sort((a,b)=>b[1]-a[1]).slice(0,1).map(([k, v]) => (
-                          <span key={k} className="text-[9px] px-2.5 py-1 rounded-full border border-neutral-700 bg-neutral-800/50 uppercase font-mono">{k} {v}%</span>
+                          <span key={k} className="text-[9px] px-2.5 py-1 rounded-full border border-neutral-100 bg-white shadow-sm uppercase font-bold text-neutral-400">{k} {v}%</span>
                         ))}
                       </div>
                     </td>
-                    <td className="p-6 text-neutral-400 font-mono">{msg.likes || 0}</td>
+                    <td className="p-6 text-neutral-400 font-bold font-mono flex items-center gap-1.5">
+                      <Heart size={12} className="text-red-300" /> {msg.likes || 0}
+                    </td>
                     <td className="p-6 text-center">
-                      <button onClick={() => onDelete(msg.id)} className="p-2.5 text-neutral-700 hover:text-red-500 hover:bg-red-500/10 rounded-xl transition-all"><Trash2 size={16} /></button>
+                      <button onClick={() => onDelete(msg.id)} className="p-2.5 text-neutral-200 hover:text-red-400 hover:bg-red-50 rounded-xl transition-all"><Trash2 size={16} /></button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {messages.length === 0 && <div className="p-32 text-center text-neutral-600 text-sm font-light italic">데이터가 없습니다.</div>}
+            {messages.length === 0 && <div className="p-40 text-center text-neutral-400 text-sm font-light italic flex flex-col items-center gap-4"><Info size={32} className="opacity-20" />데이터가 비어있습니다.</div>}
           </div>
         </div>
       )}
@@ -615,12 +633,8 @@ function AdminPanel({ settings, messages, onUpdate, onDelete, onBack }) {
 function AdminField({ label, value, onChange }) {
   return (
     <div className="space-y-2">
-      <label className="text-[10px] text-neutral-600 uppercase tracking-widest font-bold ml-1">{label}</label>
-      <input 
-        value={value} 
-        onChange={e => onChange(e.target.value)} 
-        className="w-full bg-black/40 border border-neutral-800 p-5 rounded-2xl outline-none focus:border-neutral-500 transition-all font-light text-neutral-200 font-sans" 
-      />
+      <label className="text-[10px] text-neutral-400 uppercase tracking-widest font-bold ml-1 font-sans">{label}</label>
+      <input value={value} onChange={e => onChange(e.target.value)} className="w-full bg-neutral-50 border border-neutral-100 p-5 rounded-2xl outline-none focus:border-[#004aad] transition-all font-bold text-[#004aad] font-sans" />
     </div>
   );
 }
@@ -628,14 +642,8 @@ function AdminField({ label, value, onChange }) {
 function AdminSelect({ label, options, value, onChange }) {
   return (
     <div className="space-y-2">
-      <label className="text-[10px] text-neutral-600 uppercase tracking-widest font-bold ml-1">{label}</label>
-      <select 
-        value={value} 
-        onChange={e => onChange(e.target.value)}
-        className="w-full bg-black/40 border border-neutral-800 p-5 rounded-2xl outline-none focus:border-neutral-500 transition-all font-light appearance-none text-neutral-200 font-sans"
-      >
-        {options.map(opt => <option key={opt.value} value={opt.value} className="bg-neutral-900 font-sans">{opt.label}</option>)}
-      </select>
+      <label className="text-[10px] text-neutral-400 uppercase tracking-widest font-bold ml-1 font-sans">{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)} className="w-full bg-neutral-50 border border-neutral-100 p-5 rounded-2xl outline-none focus:border-[#004aad] transition-all font-bold appearance-none text-[#004aad] font-sans">{options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select>
     </div>
   );
 }
