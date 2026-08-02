@@ -1,555 +1,799 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { 
-  getFirestore, 
-  collection, 
-  addDoc, 
-  onSnapshot, 
-  serverTimestamp, 
-  doc, 
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  onSnapshot,
+  query,
+  runTransaction,
+  serverTimestamp,
   setDoc,
   updateDoc,
-  increment,
-  query,
-  orderBy,
-  limit,
-  deleteDoc,
-  getDoc,
   where,
   writeBatch,
-  getDocs
 } from 'firebase/firestore';
-import { 
-  getAuth, 
-  signInAnonymously, 
+import {
+  onAuthStateChanged,
+  signInAnonymously,
   signInWithCustomToken,
-  onAuthStateChanged 
+  signInWithEmailAndPassword,
+  signOut,
 } from 'firebase/auth';
-import { Send, Settings, Smartphone, Monitor, Heart, Sparkles, BrainCircuit, Download, CheckCircle2, UserCircle, MessageSquare, X, Trash2, Sliders, AlertCircle, BarChart3, FileJson, History, Info } from 'lucide-react';
+import QRCode from 'qrcode';
+import confetti from 'canvas-confetti';
+import { toPng } from 'html-to-image';
+import {
+  ArrowLeft,
+  ArrowRight,
+  BarChart3,
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  CirclePause,
+  CirclePlay,
+  Clock3,
+  Copy,
+  Download,
+  Eye,
+  EyeOff,
+  Heart,
+  KeyRound,
+  LayoutDashboard,
+  LoaderCircle,
+  LockKeyhole,
+  LogOut,
+  MessageCircleMore,
+  MonitorUp,
+  Plus,
+  QrCode,
+  RefreshCw,
+  Send,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  Users,
+  X,
+} from 'lucide-react';
+import { appId, auth, db, isFirebaseReady } from './lib/firebase';
+import {
+  AURA_THEMES,
+  createSessionCode,
+  DEFAULT_SESSION,
+  fallbackAura,
+  getAuraColor,
+  mergeSession,
+  normalizeCode,
+  resolveRoute,
+  routeTo,
+} from './lib/session';
 
-/**
- * [환경 변수 정적 맵핑]
- * Vite의 정적 치환 기능을 활용하여 Firebase API Key 에러를 원천 차단합니다.
- */
-const getEnv = (key) => {
-  try {
-    const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
-    return env[key] || "";
-  } catch (e) {
-    return "";
-  }
-};
-
-const isCanvas = typeof __firebase_config !== 'undefined';
-
-const firebaseConfig = isCanvas 
-  ? JSON.parse(__firebase_config)
-  : {
-      apiKey: getEnv('VITE_FIREBASE_API_KEY'),
-      authDomain: getEnv('VITE_FIREBASE_AUTH_DOMAIN'),
-      projectId: getEnv('VITE_FIREBASE_PROJECT_ID'),
-      storageBucket: getEnv('VITE_FIREBASE_STORAGE_BUCKET'),
-      messagingSenderId: getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID'),
-      appId: getEnv('VITE_FIREBASE_APP_ID')
-    };
-
-let app, auth, db;
-const isValidKey = isCanvas || (firebaseConfig && firebaseConfig.apiKey && firebaseConfig.apiKey.length > 10);
-
-if (isValidKey) {
-  try {
-    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-    auth = getAuth(app);
-    db = getFirestore(app);
-  } catch (e) {
-    console.error("Firebase Init Error:", e);
-  }
-}
-
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'unframe-interactive-wall';
-const apiKey = isCanvas ? "" : getEnv('VITE_GEMINI_API_KEY');
-
-const BASE_THEMES = {
-  POSITIVE: { r: 0, g: 74, b: 173, label: 'Joy', color: '#004aad' },
-  CALM: { r: 45, g: 212, b: 191, label: 'Calm', color: '#2dd4bf' },
-  ENERGETIC: { r: 245, g: 158, b: 11, label: 'Power', color: '#f59e0b' },
-  DEEP: { r: 139, g: 92, b: 246, label: 'Deep', color: '#8b5cf6' }
-};
-
-// --- 라이브러리 동적 로드 엔진 (html-to-image 교체) ---
-const loadScript = (id, src) =>
-  new Promise((resolve, reject) => {
-    const existing = document.getElementById(id);
-    if (existing) return resolve(true);
-    const script = document.createElement('script');
-    script.id = id;
-    script.src = src;
-    script.async = true;
-    script.onload = () => resolve(true);
-    script.onerror = reject;
-    document.head.appendChild(script);
-  });
-
-const loadExternalLibs = async () => {
-  try {
-    await Promise.all([
-      loadScript('confetti-lib', "https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"),
-      // html2canvas 대신 html-to-image 사용 (더 정교한 캡처)
-      loadScript('html-to-image-lib', "https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.11/html-to-image.min.js"),
-    ]);
-  } catch (e) {
-    console.error("라이브러리 로드 실패:", e);
-  }
-};
+const sessionRef = (code) => doc(db, 'artifacts', appId, 'sessions', code);
+const messagesRef = (code) => collection(db, 'artifacts', appId, 'sessions', code, 'messages');
+const likesRef = (code, uid) => collection(db, 'artifacts', appId, 'sessions', code, 'participants', uid, 'likes');
 
 export default function App() {
+  const [route, setRoute] = useState(resolveRoute);
   const [user, setUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [session, setSession] = useState(undefined);
   const [messages, setMessages] = useState([]);
-  const [settings, setSettings] = useState(null);
-  const [likedMessageIds, setLikedMessageIds] = useState(new Set());
-  const [view, setView] = useState(() => new URLSearchParams(window.location.search).get('view') || 'input');
-  const [showSuccess, setShowSuccess] = useState(null);
+  const [likedIds, setLikedIds] = useState(new Set());
+  const [ticket, setTicket] = useState(null);
+  const [notice, setNotice] = useState('');
 
   useEffect(() => {
-    if (!auth) return;
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-        await loadExternalLibs(); // 라이브러리 로드 대기
-      } catch (err) { console.error("Auth error:", err); }
-    };
-    initAuth();
-    const unsubscribeAuth = onAuthStateChanged(auth, setUser);
-    return () => unsubscribeAuth();
+    const syncRoute = () => setRoute(resolveRoute());
+    window.addEventListener('popstate', syncRoute);
+    return () => window.removeEventListener('popstate', syncRoute);
   }, []);
 
   useEffect(() => {
-    if (!user || !db) return;
-    const settingsDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'appSettings');
-    const unsubscribeSettings = onSnapshot(settingsDocRef, (docSnap) => {
-      if (docSnap.exists()) setSettings(docSnap.data());
-    });
-    const likesCollection = collection(db, 'artifacts', appId, 'users', user.uid, 'user_likes');
-    const unsubscribeLikes = onSnapshot(likesCollection, (snapshot) => {
-      setLikedMessageIds(new Set(snapshot.docs.map(doc => doc.id)));
-    });
-    const msgCollection = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
-    const unsubscribeMsgs = onSnapshot(msgCollection, (snapshot) => {
-      const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setMessages(msgs.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
-    });
-    return () => { unsubscribeSettings(); unsubscribeLikes(); unsubscribeMsgs(); };
-  }, [user]);
-
-  const toggleLike = async (messageId) => {
-    if (!user || !db) return;
-    const likeDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'user_likes', messageId);
-    const messageDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'messages', messageId);
-    try {
-      const likeDoc = await getDoc(likeDocRef);
-      if (likeDoc.exists()) {
-        await deleteDoc(likeDocRef);
-        await updateDoc(messageDocRef, { likes: increment(-1) });
-      } else {
-        await setDoc(likeDocRef, { messageId, timestamp: serverTimestamp() });
-        await updateDoc(messageDocRef, { likes: increment(1) });
+    if (!auth) return undefined;
+    const unsubscribe = onAuthStateChanged(auth, async (nextUser) => {
+      setUser(nextUser);
+      setAuthReady(true);
+      if (!nextUser || nextUser.isAnonymous || !db) {
+        setIsAdmin(false);
+        return;
       }
-    } catch (err) { console.error(err); }
-  };
-
-  const deleteMessage = async (msgId) => {
-    if (!db || !window.confirm("이 메시지를 삭제하시겠습니까?")) return;
-    try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'messages', msgId));
-    } catch (e) { console.error(e); }
-  };
-
-  const clearAllMessages = async () => {
-    if (!db || !window.confirm("모든 메시지를 초기화하시겠습니까?")) return;
-    const q = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
-    const snapshot = await getDocs(q);
-    const batch = writeBatch(db);
-    snapshot.docs.forEach(d => batch.delete(d.ref));
-    await batch.commit();
-  };
-
-  if (!isValidKey && !isCanvas) {
-    return (
-      <div className="min-h-screen bg-[#f3efea] text-[#004aad] flex flex-col items-center justify-center p-8 text-center font-sans">
-        <AlertCircle className="w-16 h-16 mb-6" />
-        <h1 className="text-2xl font-bold mb-4 italic">Environment Required</h1>
-        <p className="text-neutral-600 mb-8 max-w-sm">Firebase 설정이 비어있습니다.</p>
-      </div>
-    );
-  }
-
-  if (!settings) return (
-    <div className="min-h-screen bg-[#f3efea] flex flex-col items-center justify-center font-sans gap-4">
-      <div className="w-8 h-8 border-2 border-[#004aad] border-t-transparent rounded-full animate-spin"></div>
-      <p className="text-[#004aad] tracking-[0.3em] uppercase text-[10px] font-bold text-center">Unframe Networking...</p>
-    </div>
-  );
-
-  return (
-    <div className="min-h-screen bg-[#f3efea] text-[#111] overflow-hidden font-sans selection:bg-[#004aad] selection:text-white">
-      {view === 'input' && (
-        <VisitorInput 
-          settings={settings.input} 
-          messages={messages.slice(0, 10)} 
-          user={user} 
-          likedMessageIds={likedMessageIds} 
-          onToggleLike={toggleLike} 
-          onSuccess={(data) => setShowSuccess(data)}
-        />
-      )}
-      {view === 'display' && <DisplayWall settings={settings.display} messages={messages} />}
-      {view === 'admin' && (
-        <AdminPanel 
-          settings={settings} 
-          messages={messages}
-          onUpdate={(s) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'appSettings'), s)} 
-          onDelete={deleteMessage}
-          onClearAll={clearAllMessages}
-          onBack={() => setView('display')} 
-        />
-      )}
-
-      {showSuccess && <SuccessTicket data={showSuccess} onClose={() => setShowSuccess(null)} />}
-      
-      <style>{`
-        @keyframes float-down {
-          0% { transform: translateY(-120%); opacity: 0; }
-          10% { opacity: 1; }
-          90% { opacity: 1; }
-          100% { transform: translateY(110vh); opacity: 0; }
-        }
-        @keyframes heart-beat {
-          0%, 100% { transform: scale(1); }
-          50% { transform: scale(1.3); filter: brightness(1.2); }
-        }
-        .animate-float { animation: float-down linear infinite; }
-        .animate-beat { animation: heart-beat 0.6s ease-in-out; }
-        .aura-glow { box-shadow: 0 0 60px var(--aura-color); }
-        .ticket-mask { 
-          mask-image: radial-gradient(circle at 0% 65%, transparent 15px, black 16px), 
-                      radial-gradient(circle at 100% 65%, transparent 15px, black 16px); 
-          -webkit-mask-image: radial-gradient(circle at 0% 65%, transparent 15px, black 16px), 
-                              radial-gradient(circle at 100% 65%, transparent 15px, black 16px);
-        }
-      `}</style>
-    </div>
-  );
-}
-
-// --- Component: 관객 입력창 ---
-function VisitorInput({ settings, messages, user, likedMessageIds, onToggleLike, onSuccess }) {
-  const [text, setText] = useState('');
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-
-  const callGeminiAI = async (inputText) => {
-    const systemPrompt = `Analyze mood for art exhibition. Provide contrast scores. Return JSON: {"POSITIVE": score, "CALM": score, "ENERGETIC": score, "DEEP": score}. Total 100.`;
-    try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `${systemPrompt}\n\nUser: "${inputText}"` }] }],
-          generationConfig: { responseMimeType: "application/json" }
-        })
-      });
-      if (response.ok) {
-        const result = await response.json();
-        let raw = result.candidates[0].content.parts[0].text;
-        const clean = raw.replace(/```json/g, "").replace(/```/g, "").trim();
-        const parsed = JSON.parse(clean);
-        if (Object.values(parsed).every(v => v === 25)) return { POSITIVE: 45, CALM: 20, ENERGETIC: 10, DEEP: 25 };
-        return parsed;
+      try {
+        const adminSnap = await getDoc(doc(db, 'artifacts', appId, 'admins', nextUser.uid));
+        setIsAdmin(adminSnap.exists() && adminSnap.data().active !== false);
+      } catch {
+        setIsAdmin(false);
       }
-      throw new Error();
-    } catch (err) { 
-      const r = () => Math.floor(Math.random() * 50);
-      return { POSITIVE: r(), CALM: r(), ENERGETIC: r(), DEEP: r() };
+    });
+
+    if (!auth.currentUser) {
+      const initialToken = globalThis.__initial_auth_token;
+      const signIn = initialToken
+        ? signInWithCustomToken(auth, initialToken)
+        : signInAnonymously(auth);
+      signIn.catch((error) => setNotice(error.message));
     }
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!db || !route.code || !user) {
+      return undefined;
+    }
+
+    const stopSession = onSnapshot(
+      sessionRef(route.code),
+      (snapshot) => setSession(snapshot.exists() ? mergeSession({ id: snapshot.id, ...snapshot.data() }) : null),
+      () => setSession(null),
+    );
+
+    const source = route.view === 'admin' && isAdmin
+      ? messagesRef(route.code)
+      : query(messagesRef(route.code), where('status', '==', 'approved'));
+    const stopMessages = onSnapshot(
+      source,
+      (snapshot) => {
+        const next = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+        next.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+        setMessages(next);
+      },
+      () => setMessages([]),
+    );
+
+    const stopLikes = onSnapshot(
+      likesRef(route.code, user.uid),
+      (snapshot) => setLikedIds(new Set(snapshot.docs.map((item) => item.id))),
+      () => setLikedIds(new Set()),
+    );
+
+    return () => {
+      stopSession();
+      stopMessages();
+      stopLikes();
+    };
+  }, [route.code, route.view, user, isAdmin]);
+
+  const showNotice = (message) => {
+    setNotice(message);
+    window.setTimeout(() => setNotice(''), 2600);
   };
 
-  const send = async (e) => {
-    e.preventDefault();
-    if (!text.trim() || isAnalyzing || !user) return;
-    setIsAnalyzing(true);
-    const scores = await callGeminiAI(text);
-    const msgData = {
-      text,
-      timestamp: serverTimestamp(),
+  const createSession = async (code, initial = {}) => {
+    if (!isAdmin) throw new Error('관리자 권한이 필요합니다.');
+    const normalized = normalizeCode(code || createSessionCode());
+    const target = sessionRef(normalized);
+    if ((await getDoc(target)).exists()) throw new Error('이미 사용 중인 참여 코드입니다.');
+    await setDoc(target, {
+      ...DEFAULT_SESSION,
+      ...initial,
+      code: normalized,
+      createdAt: serverTimestamp(),
+      createdBy: user.uid,
+      updatedAt: serverTimestamp(),
+    });
+    routeTo('admin', normalized);
+  };
+
+  const updateSession = async (next) => {
+    await updateDoc(sessionRef(route.code), { ...next, updatedAt: serverTimestamp() });
+    showNotice('설정을 저장했습니다.');
+  };
+
+  const submitMessage = async (text) => {
+    if (!user || session.status !== 'live') throw new Error('현재 참여가 잠시 멈춰 있습니다.');
+    const scores = await analyzeAura(text);
+    const payload = {
+      text: text.trim(),
       scores,
       likes: 0,
-      userId: user.uid
+      userId: user.uid,
+      status: session.moderationMode === 'pre' ? 'pending' : 'approved',
+      createdAt: serverTimestamp(),
     };
+    const created = doc(messagesRef(route.code));
+    const participant = doc(db, 'artifacts', appId, 'sessions', route.code, 'participants', user.uid);
+    const batch = writeBatch(db);
+    batch.set(created, payload);
+    batch.set(participant, { lastSubmittedAt: serverTimestamp() }, { merge: true });
+    await batch.commit();
+    const nextTicket = { ...payload, id: created.id };
+    setTicket(nextTicket);
+    return nextTicket;
+  };
+
+  const toggleLike = async (messageId) => {
+    if (!user) return;
+    const like = doc(likesRef(route.code, user.uid), messageId);
+    const message = doc(messagesRef(route.code), messageId);
+    await runTransaction(db, async (transaction) => {
+      const [likeSnap, messageSnap] = await Promise.all([transaction.get(like), transaction.get(message)]);
+      if (!messageSnap.exists()) return;
+      const currentLikes = Math.max(0, Number(messageSnap.data().likes || 0));
+      if (likeSnap.exists()) {
+        transaction.delete(like);
+        transaction.update(message, { likes: Math.max(0, currentLikes - 1) });
+      } else {
+        transaction.set(like, { createdAt: serverTimestamp() });
+        transaction.update(message, { likes: currentLikes + 1 });
+      }
+    });
+  };
+
+  const setMessageStatus = (messageId, status) =>
+    updateDoc(doc(messagesRef(route.code), messageId), { status, moderatedAt: serverTimestamp() });
+
+  const deleteMessage = (messageId) => deleteDoc(doc(messagesRef(route.code), messageId));
+
+  const clearMessages = async () => {
+    let snapshot = await getDocs(query(messagesRef(route.code), limit(400)));
+    while (!snapshot.empty) {
+      const batch = writeBatch(db);
+      snapshot.docs.forEach((item) => batch.delete(item.ref));
+      await batch.commit();
+      snapshot = await getDocs(query(messagesRef(route.code), limit(400)));
+    }
+    showNotice('모든 응답을 삭제했습니다.');
+  };
+
+  if (!isFirebaseReady) return <ConfigurationRequired />;
+  if (!authReady) return <LoadingScreen label="공간을 준비하고 있습니다" />;
+
+  const visibleSession = session === null
+    ? null
+    : route.code && session?.id !== route.code
+      ? undefined
+      : session;
+
+  return (
+    <div className="app-shell">
+      {route.view === 'home' && <Home onJoin={(code) => routeTo('join', code)} onAdmin={() => routeTo('admin')} />}
+      {route.view === 'join' && (
+        <SessionGate session={visibleSession} code={route.code}>
+          <VisitorExperience
+            session={visibleSession}
+            messages={messages.slice(0, 12)}
+            likedIds={likedIds}
+            onLike={toggleLike}
+            onSubmit={submitMessage}
+          />
+        </SessionGate>
+      )}
+      {route.view === 'wall' && (
+        <SessionGate session={visibleSession} code={route.code}>
+          <DisplayWall session={visibleSession} messages={messages} code={route.code} />
+        </SessionGate>
+      )}
+      {route.view === 'admin' && (
+        isAdmin ? (
+          <AdminArea
+            user={user}
+            code={route.code}
+            session={visibleSession}
+            messages={messages}
+            onCreate={createSession}
+            onUpdate={updateSession}
+            onModerate={setMessageStatus}
+            onDelete={deleteMessage}
+            onClear={clearMessages}
+            onSignOut={() => signOut(auth)}
+          />
+        ) : (
+          <AdminLogin user={user} />
+        )
+      )}
+      {ticket && <SuccessTicket ticket={ticket} session={visibleSession} onClose={() => setTicket(null)} />}
+      {notice && <div className="toast"><Check size={16} /> {notice}</div>}
+    </div>
+  );
+}
+
+async function analyzeAura(text) {
+  const endpoint = import.meta.env.VITE_AI_PROXY_URL || '/.netlify/functions/analyze-aura';
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!response.ok) throw new Error('Aura analysis unavailable');
+    const result = await response.json();
+    return result.scores;
+  } catch {
+    return fallbackAura(text);
+  }
+}
+
+function ConfigurationRequired() {
+  return (
+    <main className="state-page">
+      <div className="state-icon"><Settings2 /></div>
+      <p className="eyebrow">Configuration required</p>
+      <h1>Firebase 연결이 필요합니다.</h1>
+      <p>프로젝트의 <code>.env</code> 파일에 Firebase 환경 변수를 설정해 주세요.</p>
+    </main>
+  );
+}
+
+function LoadingScreen({ label }) {
+  return (
+    <main className="state-page">
+      <div className="brand-orbit"><span /></div>
+      <p className="eyebrow">UNFRAME LIVE</p>
+      <p>{label}</p>
+    </main>
+  );
+}
+
+function SessionGate({ session, code, children }) {
+  if (session === undefined) return <LoadingScreen label="세션에 연결하고 있습니다" />;
+  if (!code || session === null) {
+    return (
+      <main className="state-page">
+        <button className="back-link" onClick={() => routeTo('home')}><ArrowLeft size={16} /> 처음으로</button>
+        <div className="state-icon"><QrCode /></div>
+        <p className="eyebrow">Session not found</p>
+        <h1>참여 코드를 확인해 주세요.</h1>
+        <p>{code ? `${code} 세션을 찾을 수 없습니다.` : '세션 코드가 비어 있습니다.'}</p>
+      </main>
+    );
+  }
+  return children;
+}
+
+function Home({ onJoin, onAdmin }) {
+  const [code, setCode] = useState('');
+  const submit = (event) => {
+    event.preventDefault();
+    if (normalizeCode(code).length >= 4) onJoin(normalizeCode(code));
+  };
+
+  return (
+    <main className="home-page">
+      <nav className="home-nav">
+        <Logo />
+        <button className="text-button" onClick={onAdmin}><LockKeyhole size={15} /> 운영자</button>
+      </nav>
+      <section className="home-hero">
+        <div className="hero-copy">
+          <p className="eyebrow"><span className="live-dot" /> The room is listening</p>
+          <h1>생각이 모이면,<br /><em>공간이 반응합니다.</em></h1>
+          <p className="hero-description">질문에 답하고 서로의 감정에 공감해 보세요. 당신의 한 문장이 이 공간의 일부가 됩니다.</p>
+          <form className="join-form" onSubmit={submit}>
+            <label htmlFor="session-code">참여 코드</label>
+            <div className="join-control">
+              <input id="session-code" value={code} onChange={(event) => setCode(normalizeCode(event.target.value))} placeholder="예: FRAME7" autoComplete="off" />
+              <button disabled={code.length < 4} aria-label="세션 입장"><ArrowRight /></button>
+            </div>
+          </form>
+          <p className="join-hint">앞 화면의 QR을 촬영했다면 코드 입력 없이 바로 연결됩니다.</p>
+        </div>
+        <div className="hero-visual" aria-hidden="true">
+          <div className="aura aura-one" />
+          <div className="aura aura-two" />
+          <div className="aura aura-three" />
+          <div className="floating-note note-one">어제와 다른<br />시선으로 보게 됐어요.</div>
+          <div className="floating-note note-two">낯선 감각이<br />오래 남아요.</div>
+          <div className="floating-note note-three">우리의 생각이<br />하나의 장면으로.</div>
+        </div>
+      </section>
+      <footer className="home-footer"><span>UNFRAME © 2026</span><span>Live participatory experience</span></footer>
+    </main>
+  );
+}
+
+function Logo({ inverse = false }) {
+  return <div className={`logo ${inverse ? 'inverse' : ''}`}><span className="logo-mark" />UNFRAME <b>LIVE</b></div>;
+}
+
+function VisitorExperience({ session, messages, likedIds, onLike, onSubmit }) {
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+  const isPaused = session.status !== 'live';
+
+  const send = async (event) => {
+    event.preventDefault();
+    if (!text.trim() || sending || isPaused) return;
+    setSending(true);
+    setError('');
     try {
-      const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), msgData);
-      onSuccess({ ...msgData, id: docRef.id });
+      await onSubmit(text);
       setText('');
-    } finally { setIsAnalyzing(false); }
+    } catch (submitError) {
+      setError(submitError.message);
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
-    <div className={`flex flex-col min-h-screen p-8 max-w-md mx-auto py-16 ${settings.fontFamily}`}>
-      <header className="mb-12">
-        <div className="w-12 h-px bg-[#004aad] mb-6"></div>
-        <h1 className="text-3xl font-light mb-3 leading-tight text-[#004aad]">{settings.question}</h1>
-        <p className="text-neutral-500 text-[10px] tracking-[0.2em] uppercase font-bold">{settings.subtitle}</p>
+    <main className="visitor-page">
+      <header className="visitor-header">
+        <Logo />
+        <span className={`status-pill ${isPaused ? 'paused' : ''}`}><span /> {isPaused ? 'PAUSED' : 'LIVE'}</span>
       </header>
-      
-      <form onSubmit={send} className="mb-16">
-        <div className="relative group">
-          <textarea value={text} onChange={(e) => setText(e.target.value)} className="w-full bg-white/50 border border-neutral-200 rounded-4xl p-7 h-48 focus:border-[#004aad] outline-none transition-all mb-6 text-lg font-light backdrop-blur-sm shadow-sm" placeholder={settings.placeholder} maxLength={150} />
-          {isAnalyzing && (
-            <div className="absolute inset-0 bg-white/70 rounded-4xl flex flex-col items-center justify-center backdrop-blur-md z-20">
-              <BrainCircuit className="text-[#004aad] animate-pulse mb-3" size={32} />
-              <p className="text-[10px] font-bold tracking-widest text-[#004aad]">ANALYZING AURA...</p>
-            </div>
-          )}
-        </div>
-        <button disabled={!text.trim() || isAnalyzing} className="w-full bg-[#004aad] text-white py-5 rounded-2xl font-bold flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50 transition-all shadow-xl shadow-blue-200">
-          <Send size={18} /> {isAnalyzing ? "처리 중..." : settings.buttonText}
-        </button>
-      </form>
-
-      <div className="space-y-5">
-        <h3 className="text-[10px] text-neutral-400 uppercase tracking-widest flex items-center gap-2 mb-6 font-bold"><Sparkles size={14} className="text-[#004aad]"/> Recent Traces</h3>
-        {messages.map(msg => (
-          <div key={msg.id} className="bg-white/40 border border-neutral-200 p-6 rounded-3xl flex items-center justify-between transition-all hover:border-neutral-300 shadow-sm animate-in fade-in duration-500">
-            <p className="text-sm font-light text-neutral-700 pr-6 leading-relaxed">{msg.text}</p>
-            <button onClick={() => onToggleLike(msg.id)} className="flex flex-col items-center gap-1 group/heart">
-              <Heart size={18} className={likedMessageIds.has(msg.id) ? "fill-[#004aad] text-[#004aad] scale-110 transition-all" : "text-neutral-300 hover:text-neutral-400"} />
-              <span className="text-[10px] font-mono text-neutral-400 font-bold">{msg.likes || 0}</span>
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// --- Component: 전시 메인 화면 ---
-function DisplayWall({ settings, messages }) {
-  const qStyle = {
-    fontSize: settings.questionSize || '72px',
-    fontFamily: settings.fontFamily || 'inherit'
-  };
-  return (
-    <div className={`relative w-full h-screen bg-[#f3efea] flex items-center justify-center`}>
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,74,173,0.05)_0%,transparent_80%)] z-0"></div>
-      <div className="relative z-30 flex flex-col items-center pointer-events-none px-12 max-w-7xl">
-        <div className="bg-[#f3efea]/90 backdrop-blur-xl p-16 rounded-[4rem] border border-[#004aad]/5 shadow-2xl shadow-[#004aad]/10 text-center animate-in fade-in zoom-in duration-1000">
-          <h2 style={qStyle} className="font-light mb-10 tracking-tighter leading-tight text-[#004aad] drop-shadow-sm">{settings.question}</h2>
-          <div className="flex items-center justify-center gap-8 text-[#004aad]/40 font-bold">
-            <div className="h-px w-24 bg-current"></div>
-            <p className="text-2xl tracking-[0.4em] uppercase font-light italic">{settings.subtitle}</p>
-            <div className="h-px w-24 bg-current"></div>
-          </div>
-        </div>
-      </div>
-      <div className="absolute inset-0 overflow-hidden pointer-events-none z-10">
-        {messages.map((msg, i) => <MessageCard key={msg.id + i} msg={msg} index={i} />)}
-      </div>
-      <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-[#f3efea] to-transparent z-40 pointer-events-none"></div>
-    </div>
-  );
-}
-
-function MessageCard({ msg, index }) {
-  const [pulse, setPulse] = useState(false);
-  const [pos, setPos] = useState({ x: Math.random() * 80 + 10, rot: Math.random() * 10 - 5 });
-  const handleIteration = () => setPos({ x: Math.random() * 80 + 10, rot: Math.random() * 10 - 5 });
-  const mixedColor = useMemo(() => {
-    const s = msg.scores || { POSITIVE: 25, CALM: 25, ENERGETIC: 25, DEEP: 25 };
-    const r = (s.POSITIVE * BASE_THEMES.POSITIVE.r + s.CALM * BASE_THEMES.CALM.r + s.ENERGETIC * BASE_THEMES.ENERGETIC.r + s.DEEP * BASE_THEMES.DEEP.r) / 100;
-    const g = (s.POSITIVE * BASE_THEMES.POSITIVE.g + s.CALM * BASE_THEMES.CALM.g + s.ENERGETIC * BASE_THEMES.ENERGETIC.g + s.DEEP * BASE_THEMES.DEEP.g) / 100;
-    const b = (s.POSITIVE * BASE_THEMES.POSITIVE.b + s.CALM * BASE_THEMES.CALM.b + s.ENERGETIC * BASE_THEMES.ENERGETIC.b + s.DEEP * BASE_THEMES.DEEP.b) / 100;
-    return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
-  }, [msg.scores]);
-  useEffect(() => { if (msg.likes > 0) { setPulse(true); setTimeout(() => setPulse(false), 600); } }, [msg.likes]);
-
-  return (
-    <div 
-      onAnimationIteration={handleIteration}
-      className={`absolute p-10 rounded-[2.5rem] border border-[#004aad]/5 backdrop-blur-3xl animate-float transition-all duration-700 ${pulse ? 'animate-beat z-20 brightness-110' : 'z-0'}`} 
-      style={{ left: `${pos.x}%`, animationDuration: `${28 + (index % 8) * 5}s`, animationDelay: `${(index % 15) * 1.8}s`, backgroundColor: 'rgba(255, 255, 255, 0.6)', boxShadow: `0 0 40px ${mixedColor.replace('rgb', 'rgba').replace(')', ', 0.25)')}`, transform: `rotate(${pos.rot}deg)`, maxWidth: '380px' }}
-    >
-      <p className="text-2xl font-light leading-relaxed text-[#004aad] mb-8 font-bold tracking-tight">{msg.text}</p>
-      <div className="flex items-center justify-between opacity-30">
-        <div className="flex flex-wrap gap-2">
-          {msg.scores && Object.entries(msg.scores).sort((a,b)=>b[1]-a[1]).slice(0,2).filter(([_, v]) => v > 20).map(([k, _]) => (
-            <div key={k} className="flex items-center gap-1.5">
-              <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: `rgb(${BASE_THEMES[k].r}, ${BASE_THEMES[k].g}, ${BASE_THEMES[k].b})` }}></div>
-              <span className="text-[8px] font-mono tracking-widest uppercase font-bold">{BASE_THEMES[k].label}</span>
-            </div>
+      <section className="visitor-intro">
+        <span className="step-number">01</span>
+        <p className="eyebrow">Today’s question</p>
+        <h1>{session.input.question}</h1>
+        <p>{session.input.subtitle}</p>
+      </section>
+      <section className="composer-card">
+        <form onSubmit={send}>
+          <textarea
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            placeholder={isPaused ? '진행자가 참여를 잠시 멈췄습니다.' : session.input.placeholder}
+            maxLength={180}
+            disabled={isPaused || sending}
+          />
+          <div className="composer-meta"><span>{text.length} / 180</span><span>익명으로 공유됩니다</span></div>
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button" disabled={!text.trim() || sending || isPaused}>
+            {sending ? <><LoaderCircle className="spin" /> Aura 분석 중</> : <><Send /> {session.input.buttonText}</>}
+          </button>
+        </form>
+        <div className="event-guide"><Sparkles /><p><b>Aura Ticket</b>{session.input.eventGuide}</p></div>
+      </section>
+      <section className="recent-section">
+        <div className="section-heading"><div><p className="eyebrow">Shared by the room</p><h2>방금 도착한 생각</h2></div><span>{messages.length} traces</span></div>
+        <div className="trace-list">
+          {messages.length === 0 && <div className="empty-card">첫 번째 생각을 남겨보세요.</div>}
+          {messages.map((message) => (
+            <article className="trace-card" key={message.id}>
+              <span className="trace-aura" style={{ background: getAuraColor(message.scores) }} />
+              <p>{message.text}</p>
+              <button className={likedIds.has(message.id) ? 'liked' : ''} onClick={() => onLike(message.id)} aria-label="공감하기">
+                <Heart /> <span>{message.likes || 0}</span>
+              </button>
+            </article>
           ))}
         </div>
-        {msg.likes > 0 && <div className="flex items-center gap-1.5 text-[#004aad] animate-in zoom-in font-bold font-mono text-xs"><Heart size={12} className="fill-current" />{msg.likes}</div>}
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }
 
-// --- Component: 축포 및 티켓 저장 팝업 (html-to-image 최종형) ---
-function SuccessTicket({ data, onClose }) {
-  const ticketRef = useRef(null);
-  const [isSaving, setIsSaving] = useState(false);
+function DisplayWall({ session, messages, code }) {
+  const joinUrl = `${window.location.origin}/join/${code}`;
+  return (
+    <main className="wall-page">
+      <div className="wall-grid" />
+      <header className="wall-header"><Logo inverse /><div className="wall-meta"><span><span className="live-dot" /> {session.status === 'live' ? 'LIVE SESSION' : 'PAUSED'}</span><span>{messages.length} RESPONSES</span></div></header>
+      <section className="wall-question">
+        <p className="eyebrow">Question of the room</p>
+        <h1 style={{ fontSize: `clamp(42px, 6vw, ${session.display.questionSize})` }}>{session.display.question}</h1>
+        <p>{session.display.subtitle}</p>
+      </section>
+      <div className="wall-messages">
+        {messages.slice(0, 16).map((message, index) => <WallMessage key={`${message.id}-${message.likes || 0}`} message={message} index={index} />)}
+      </div>
+      <aside className="wall-join-card">
+        <QrImage value={joinUrl} size={116} />
+        <div><p>SCAN TO JOIN</p><strong>{code}</strong><span>휴대폰 카메라로 참여하세요</span></div>
+      </aside>
+      <footer className="wall-footer"><span>Every perspective changes the room.</span><span>UNFRAME LIVE / {code}</span></footer>
+    </main>
+  );
+}
+
+function WallMessage({ message, index }) {
+  const position = useMemo(() => {
+    const seed = Array.from(message.id).reduce((sum, char) => sum + char.charCodeAt(0), 0);
+    return {
+      left: 4 + ((seed * 17) % 78),
+      top: 9 + ((seed * 11) % 72),
+      rotate: -4 + (seed % 9),
+    };
+  }, [message.id]);
+
+  const strongest = Object.entries(message.scores || {}).sort((a, b) => b[1] - a[1])[0]?.[0];
+  return (
+    <article
+      className={`wall-message ${message.likes ? 'pulse' : ''}`}
+      style={{
+        '--x': `${position.left}vw`,
+        '--y': `${position.top}vh`,
+        '--rotation': `${position.rotate}deg`,
+        '--delay': `${(index % 8) * -2.2}s`,
+        '--aura': getAuraColor(message.scores),
+      }}
+    >
+      <p>{message.text}</p>
+      <div><span>{strongest ? AURA_THEMES[strongest]?.label : 'Trace'}</span>{message.likes > 0 && <span><Heart /> {message.likes}</span>}</div>
+    </article>
+  );
+}
+
+function QrImage({ value, size = 160 }) {
+  const [src, setSrc] = useState('');
+  useEffect(() => {
+    QRCode.toDataURL(value, { width: size * 2, margin: 1, color: { dark: '#101522', light: '#ffffff' } }).then(setSrc);
+  }, [value, size]);
+  return src ? <img className="qr-image" src={src} width={size} height={size} alt="참여 QR 코드" /> : <div className="qr-placeholder" />;
+}
+
+function SuccessTicket({ ticket, session, onClose }) {
+  const cardRef = useRef(null);
+  const [saving, setSaving] = useState(false);
+  const auraColor = getAuraColor(ticket.scores);
 
   useEffect(() => {
-    if (window.confetti) {
-      window.confetti({ particleCount: 150, spread: 80, origin: { y: 0.75 }, colors: ['#004aad', '#f3efea', '#2dd4bf', '#8b5cf6'] });
-    }
+    confetti({ particleCount: 130, spread: 78, origin: { y: 0.72 }, colors: ['#1648ff', '#38bda7', '#ff8e3c', '#885cf6'] });
   }, []);
 
-  const saveTicket = async () => {
-    const node = ticketRef.current;
-    if (!node || !window.htmlToImage) return;
-
-    setIsSaving(true);
-    
-    // 캡처 최적화를 위해 임시 스타일 조정
-    const prevMask = node.style.maskImage;
-    const prevWebkitMask = node.style.webkitMaskImage;
-    node.style.maskImage = 'none';
-    node.style.webkitMaskImage = 'none';
-
+  const save = async () => {
+    if (!cardRef.current) return;
+    setSaving(true);
     try {
-      // html-to-image는 SVG 마스크보다 PNG/JPEG 변환에 강점이 있음
-      const dataUrl = await window.htmlToImage.toPng(node, {
-        quality: 1,
-        pixelRatio: 3, // 고해상도
-        backgroundColor: '#ffffff',
-      });
-      
+      const dataUrl = await toPng(cardRef.current, { pixelRatio: 3, backgroundColor: '#f7f4ee' });
       const link = document.createElement('a');
-      link.download = `Unframe-Ticket-${data.id.slice(0, 5).toUpperCase()}.png`;
+      link.download = `UNFRAME-AURA-${ticket.id.slice(0, 6).toUpperCase()}.png`;
       link.href = dataUrl;
       link.click();
-    } catch (e) {
-      console.error("Capture Failed:", e);
-      alert("이미지 저장에 실패했습니다. 브라우저 설정을 확인해 주세요.");
     } finally {
-      node.style.maskImage = prevMask;
-      node.style.webkitMaskImage = prevWebkitMask;
-      setIsSaving(false);
+      setSaving(false);
     }
   };
 
-  const mixedColor = useMemo(() => {
-    const s = data.scores;
-    const r = (s.POSITIVE * BASE_THEMES.POSITIVE.r + s.CALM * BASE_THEMES.CALM.r + s.ENERGETIC * BASE_THEMES.ENERGETIC.r + s.DEEP * BASE_THEMES.DEEP.r) / 100;
-    const g = (s.POSITIVE * BASE_THEMES.POSITIVE.g + s.CALM * BASE_THEMES.CALM.g + s.ENERGETIC * BASE_THEMES.ENERGETIC.g + s.DEEP * BASE_THEMES.DEEP.g) / 100;
-    const b = (s.POSITIVE * BASE_THEMES.POSITIVE.b + s.CALM * BASE_THEMES.CALM.b + s.ENERGETIC * BASE_THEMES.ENERGETIC.b + s.DEEP * BASE_THEMES.DEEP.b) / 100;
-    return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
-  }, [data]);
-
+  const topAuras = Object.entries(ticket.scores || {}).sort((a, b) => b[1] - a[1]).slice(0, 3);
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-[#f3efea]/95 backdrop-blur-2xl animate-in fade-in duration-500 font-sans text-center">
-      <div className="max-w-xs w-full flex flex-col items-center">
-        <div className="mb-8 animate-in slide-in-from-top-4 duration-700 text-[#004aad]">
-          <CheckCircle2 className="w-12 h-12 mx-auto mb-4 animate-bounce" />
-          <h2 className="text-xl font-bold tracking-tight">생각이 전달되었습니다</h2>
-          <p className="text-neutral-500 text-sm mt-1">분석된 당신의 아우라 티켓을 보관하세요.</p>
+    <div className="ticket-modal" role="dialog" aria-modal="true" aria-labelledby="ticket-title">
+      <button className="modal-close" onClick={onClose} aria-label="닫기"><X /></button>
+      <div className="ticket-intro"><CheckCircle2 /><p className="eyebrow">Your thought is now live</p><h2 id="ticket-title">생각이 공간에 도착했습니다.</h2></div>
+      <article className="aura-ticket" ref={cardRef} style={{ '--ticket-aura': auraColor }}>
+        <header><Logo /><span>#{ticket.id.slice(0, 6).toUpperCase()}</span></header>
+        <div className="ticket-orb"><span /></div>
+        <div className="ticket-copy"><p>A perspective from today</p><blockquote>“{ticket.text}”</blockquote></div>
+        <div className="aura-bars">
+          {topAuras.map(([key, value]) => <div key={key}><span>{AURA_THEMES[key]?.label}</span><i><b style={{ width: `${value}%`, background: AURA_THEMES[key]?.color }} /></i><strong>{value}%</strong></div>)}
         </div>
-
-        <div ref={ticketRef} className="relative w-full bg-white rounded-[2.5rem] overflow-hidden shadow-2xl border border-neutral-100 ticket-mask p-9 flex flex-col gap-8 text-[#004aad] min-h-[420px]">
-          <div className="flex justify-between items-start text-left">
-            <div><p className="text-[9px] text-neutral-400 font-mono uppercase tracking-widest font-bold leading-none">Unframe Ticket</p><h3 className="text-2xl font-black tracking-tighter mt-1.5 italic leading-none">Aura Spectrum</h3></div>
-            <div className="w-14 h-14 rounded-full blur-3xl opacity-60" style={{ backgroundColor: mixedColor }}></div>
-          </div>
-          <div className="h-px w-full border-dashed border-t border-neutral-100"></div>
-          <div className="space-y-4 text-left">
-            <p className="text-[10px] text-neutral-400 font-mono uppercase tracking-widest font-bold">Exhibition Trace</p>
-            <p className="text-base font-light leading-relaxed italic text-neutral-800 line-clamp-6">"{data.text}"</p>
-          </div>
-          <div className="mt-auto pt-8 flex justify-between items-end border-t border-neutral-50 text-left">
-            <div><p className="text-[8px] text-neutral-300 font-mono uppercase font-bold text-[#004aad]">Ticket ID</p><p className="text-[10px] text-neutral-400 font-mono font-bold">#{data.id.slice(0,10).toUpperCase()}</p></div>
-            <p className="text-[10px] font-black uppercase tracking-widest leading-none mb-1" style={{ color: mixedColor }}>Visualized</p>
-          </div>
-        </div>
-
-        <div className="mt-10 flex gap-3 w-full">
-          <button onClick={saveTicket} disabled={isSaving} className="flex-1 bg-[#004aad] text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-2 shadow-xl shadow-blue-200 active:scale-95 transition-all"><Download size={18} /> {isSaving ? "처리 중..." : "이미지로 저장"}</button>
-          <button onClick={onClose} className="w-14 h-14 bg-white border border-neutral-100 text-neutral-400 rounded-2xl flex items-center justify-center active:scale-95 transition-all"><X size={24} /></button>
-        </div>
-      </div>
+        <footer><span>{session.title}</span><span>{new Date().toLocaleDateString('ko-KR')}</span></footer>
+      </article>
+      <button className="primary-button save-ticket" onClick={save} disabled={saving}><Download /> {saving ? '이미지 만드는 중' : 'Aura Ticket 저장'}</button>
+      <button className="text-button" onClick={onClose}>다른 생각 둘러보기</button>
     </div>
   );
 }
 
-// --- Component: 관리자 페이지 ---
-function AdminPanel({ settings, messages, onUpdate, onDelete, onClearAll, onBack }) {
-  const [local, setLocal] = useState(settings);
-  const [tab, setTab] = useState('settings');
-  const stats = useMemo(() => {
-    const total = messages.length || 1;
-    const sums = { POSITIVE: 0, CALM: 0, ENERGETIC: 0, DEEP: 0 };
-    messages.forEach(m => { if (m.scores) Object.keys(sums).forEach(k => sums[k] += (m.scores[k] || 0)); });
-    return Object.keys(sums).map(k => ({ key: k, value: Math.round(sums[k] / total) }));
-  }, [messages]);
+function AdminLogin({ user }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  const exportCSV = () => {
-    const headers = "ID,Content,UID,Likes,Sentiment\n";
-    const rows = messages.map(m => `"${m.id}","${m.text.replace(/"/g, '""')}","${m.userId}",${m.likes || 0},"${Object.entries(m.scores).sort((a,b)=>b[1]-a[1])[0][0]}"`).join("\n");
-    const blob = new Blob(["\ufeff" + headers + rows], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `Unframe-Messages-${Date.now()}.csv`;
-    link.click();
+  const submit = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch {
+      setError('이메일, 비밀번호 또는 관리자 권한을 확인해 주세요.');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleChange = (section, field, value) => setLocal(prev => ({ ...prev, [section]: { ...prev[section], [field]: value } }));
-
   return (
-    <div className="p-16 max-w-7xl mx-auto space-y-12 font-sans h-screen overflow-y-auto pb-40 text-neutral-800 animate-in fade-in duration-700">
-      <div className="flex items-center justify-between border-b border-neutral-200 pb-10 font-bold">
-        <div><h1 className="text-4xl font-black tracking-tight italic text-[#004aad] leading-none">Management</h1><p className="text-neutral-400 text-xs tracking-widest uppercase mt-3">Unframe Control Hub</p></div>
-        <div className="flex gap-4">
-          <div className="flex bg-white rounded-full p-1 border border-neutral-200 shadow-sm"><button onClick={() => setTab('settings')} className={`px-7 py-2.5 rounded-full text-xs font-bold transition-all ${tab === 'settings' ? 'bg-[#004aad] text-white' : 'text-neutral-400 hover:text-[#004aad]'}`}>Settings</button><button onClick={() => setTab('messages')} className={`px-7 py-2.5 rounded-full text-xs font-bold transition-all ${tab === 'messages' ? 'bg-[#004aad] text-white' : 'text-neutral-400 hover:text-[#004aad]'}`}>Database</button></div>
-          <button onClick={onBack} className="px-6 py-2.5 border border-neutral-200 bg-white rounded-full text-xs font-bold text-neutral-400 hover:text-[#004aad] uppercase tracking-widest transition-all">Exit</button>
-        </div>
-      </div>
-      {tab === 'settings' ? (
-        <div className="grid md:grid-cols-3 gap-10">
-          <div className="md:col-span-2 bg-white/60 p-10 rounded-[3rem] border border-neutral-100 shadow-xl space-y-10"><h2 className="text-[#004aad] text-xs font-black uppercase tracking-widest border-b border-neutral-100 pb-4 flex items-center gap-2"><Monitor size={14}/> Wall Display</h2><AdminField label="Main Question" value={local.display.question} onChange={v => handleChange('display', 'question', v)} />
-            <div className="grid grid-cols-2 gap-8"><div className="space-y-4"><label className="text-[10px] text-neutral-400 uppercase tracking-widest font-bold flex justify-between">Font Size <span>{local.display.questionSize}</span></label><div className="flex gap-4 items-center"><input type="range" min="30" max="150" value={parseInt(local.display.questionSize) || 72} onChange={e => handleChange('display', 'questionSize', `${e.target.value}px`)} className="flex-1 h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer accent-[#004aad]" /></div></div><AdminField label="Subtitle" value={local.display.subtitle} onChange={v => handleChange('display', 'subtitle', v)} /></div>
-            <div className="bg-[#f3efea]/50 p-8 rounded-3xl space-y-4"><h3 className="text-[10px] font-bold uppercase text-[#004aad] flex items-center gap-2"><BarChart3 size={14} /> Aura Analytics</h3><div className="flex items-end gap-3 h-24 pt-4">{stats.map(s => (<div key={s.key} className="flex-1 flex flex-col items-center gap-2 group"><div className="w-full bg-[#004aad]/10 rounded-lg relative overflow-hidden" style={{ height: `${s.value}%` }}><div className="absolute inset-0 opacity-40" style={{ backgroundColor: BASE_THEMES[s.key].color }}></div></div><span className="text-[8px] font-bold text-neutral-400 uppercase tracking-tighter">{s.key} {s.value}%</span></div>))}</div></div>
-          </div>
-          <div className="bg-white/60 p-10 rounded-[3rem] border border-neutral-100 shadow-xl space-y-8 flex flex-col justify-between"><div className="space-y-8"><h2 className="text-emerald-600 text-xs font-black uppercase tracking-widest border-b border-neutral-100 pb-4 flex items-center gap-2"><Smartphone size={14}/> Visitor App</h2><AdminField label="App Title" value={local.input.question} onChange={v => handleChange('input', 'question', v)} /><AdminField label="Description" value={local.input.subtitle} onChange={v => handleChange('input', 'subtitle', v)} /><AdminField label="Button Text" value={local.input.buttonText} onChange={v => handleChange('input', 'buttonText', v)} /></div><button onClick={async () => { await onUpdate(local); alert('Updated!'); }} className="w-full bg-[#004aad] text-white py-6 rounded-[2rem] font-bold text-xl hover:brightness-110 active:scale-[0.98] transition-all shadow-2xl shadow-blue-100 uppercase tracking-widest">Apply Config</button></div>
-        </div>
-      ) : (
-        <div className="space-y-6"><div className="flex justify-between items-end"><h2 className="text-xl font-black text-[#004aad] flex items-center gap-3"><MessageSquare size={20} /> Collected Traces ({messages.length})</h2><div className="flex gap-3 font-bold"><button onClick={exportCSV} className="flex items-center gap-2 px-5 py-2.5 bg-neutral-800 text-white rounded-full text-xs font-bold hover:bg-neutral-900 transition-all"><Download size={14} /> Export CSV</button><button onClick={onClearAll} className="flex items-center gap-2 px-5 py-2.5 bg-red-500 text-white rounded-full text-xs font-bold hover:bg-red-600 transition-all"><History size={14} /> Reset DB</button></div></div>
-          <div className="bg-white/80 rounded-[2.5rem] border border-neutral-100 shadow-xl overflow-hidden backdrop-blur-md">
-            <table className="w-full text-left text-sm border-collapse"><thead className="bg-neutral-50 text-neutral-400 text-[10px] uppercase font-bold border-b border-neutral-100"><tr><th className="p-6">Content</th><th className="p-6">Identity (UID / Ticket)</th><th className="p-6">Aura Status</th><th className="p-6">Engagement</th><th className="p-6 text-center">Manage</th></tr></thead>
-              <tbody className="divide-y divide-neutral-50 font-medium">{messages.map(msg => (<tr key={msg.id} className="hover:bg-[#004aad]/[0.02] transition-colors group text-neutral-600 font-bold"><td className="p-6 leading-relaxed max-w-sm">{msg.text}</td><td className="p-6 font-mono text-[10px]"><div className="flex flex-col gap-1 font-bold"><span className="text-[#004aad]">UID: {msg.userId}</span><span className="text-neutral-300">Ticket: #{msg.id.toUpperCase()}</span></div></td><td className="p-6"><div className="flex flex-wrap gap-1.5">{msg.scores && Object.entries(msg.scores).sort((a,b)=>b[1]-a[1]).slice(0,1).map(([k, v]) => (<span key={k} className="text-[9px] px-2.5 py-1 rounded-full border border-neutral-100 bg-white shadow-sm uppercase text-neutral-400">{k} {v}%</span>))}</div></td><td className="p-6 text-neutral-400 font-mono flex items-center gap-1.5"><Heart size={12} className="text-red-300" /> {msg.likes || 0}</td><td className="p-6 text-center"><button onClick={() => onDelete(msg.id)} className="p-2.5 text-neutral-200 hover:text-red-400 hover:bg-red-50 rounded-xl transition-all"><Trash2 size={16} /></button></td></tr>))}</tbody>
-            </table>
-          </div>
-        </div>
-      )}
-    </div>
+    <main className="admin-login">
+      <section className="login-brand">
+        <Logo inverse />
+        <div><p className="eyebrow">Control the room</p><h1>모임의 흐름을<br />한 화면에서.</h1><p>세션을 만들고 질문을 바꾸며, 도착하는 목소리를 안전하게 운영하세요.</p></div>
+        <div className="security-note"><ShieldCheck /><span><b>Protected workspace</b>Firebase 관리자 계정으로만 접근할 수 있습니다.</span></div>
+      </section>
+      <section className="login-panel">
+        <button className="back-link" onClick={() => routeTo('home')}><ArrowLeft /> 참여 화면으로</button>
+        <form onSubmit={submit}>
+          <p className="eyebrow">Admin access</p>
+          <h2>운영자 로그인</h2>
+          <p className="login-description">등록된 관리자 계정으로 로그인해 주세요.</p>
+          <label>이메일<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="host@unframe.kr" required /></label>
+          <label>비밀번호<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••" required /></label>
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button" disabled={loading}>{loading ? <LoaderCircle className="spin" /> : <KeyRound />} 로그인</button>
+          {user && !user.isAnonymous && <p className="permission-warning">로그인은 됐지만 관리자 문서가 없습니다. Firebase의 admins 컬렉션을 확인해 주세요.</p>}
+        </form>
+      </section>
+    </main>
   );
 }
 
-function AdminField({ label, value, onChange }) {
+function AdminArea({ user, code, session, messages, onCreate, onUpdate, onModerate, onDelete, onClear, onSignOut }) {
+  if (!code) return <SessionCreator user={user} onCreate={onCreate} onSignOut={onSignOut} />;
+  if (session === undefined) return <LoadingScreen label="관리자 콘솔을 불러오고 있습니다" />;
+  if (session === null) return <MissingAdminSession code={code} onCreate={onCreate} />;
+  return <AdminConsole {...{ user, code, session, messages, onUpdate, onModerate, onDelete, onClear, onSignOut }} />;
+}
+
+function SessionCreator({ user, onCreate, onSignOut }) {
+  const [code, setCode] = useState(createSessionCode);
+  const [title, setTitle] = useState('UNFRAME LIVE');
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setCreating(true);
+    setError('');
+    try {
+      await onCreate(code, { title });
+    } catch (createError) {
+      setError(createError.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
   return (
-    <div className="space-y-2">
-      <label className="text-[10px] text-neutral-400 uppercase tracking-widest font-bold ml-1 font-sans">{label}</label>
-      <input value={value} onChange={e => onChange(e.target.value)} className="w-full bg-neutral-50 border border-neutral-100 p-5 rounded-2xl outline-none focus:border-[#004aad] transition-all font-bold text-[#004aad] font-sans" />
-    </div>
+    <main className="creator-page">
+      <header><Logo /><div><span>{user.email}</span><button className="icon-button" onClick={onSignOut} title="로그아웃"><LogOut /></button></div></header>
+      <section className="creator-card">
+        <div className="creator-copy"><p className="eyebrow">Start a new room</p><h1>새로운 라이브 세션을<br />열어볼까요?</h1><p>참여 코드는 QR과 함께 생성됩니다. 세션을 만든 뒤 질문과 운영 방식을 세밀하게 설정할 수 있어요.</p></div>
+        <form onSubmit={submit}>
+          <label>세션 이름<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={50} /></label>
+          <label>참여 코드<div className="code-input"><input value={code} onChange={(event) => setCode(normalizeCode(event.target.value))} minLength={4} /><button type="button" onClick={() => setCode(createSessionCode())}><RefreshCw /></button></div></label>
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button" disabled={creating || code.length < 4}><Plus /> {creating ? '세션 만드는 중' : '세션 만들기'}</button>
+        </form>
+      </section>
+    </main>
   );
 }
 
-function AdminSelect({ label, options, value, onChange }) {
+function MissingAdminSession({ code, onCreate }) {
+  const [creating, setCreating] = useState(false);
   return (
-    <div className="space-y-2">
-      <label className="text-[10px] text-neutral-400 uppercase tracking-widest font-bold ml-1 font-sans">{label}</label>
-      <select value={value} onChange={e => onChange(e.target.value)} className="w-full bg-neutral-50 border border-neutral-100 p-5 rounded-2xl outline-none focus:border-[#004aad] transition-all font-bold appearance-none text-[#004aad] font-sans">{options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select>
-    </div>
+    <main className="state-page">
+      <div className="state-icon"><Plus /></div><p className="eyebrow">Empty session</p><h1>{code} 세션이 아직 없습니다.</h1>
+      <p>이 참여 코드로 새 세션을 바로 만들 수 있습니다.</p>
+      <button className="primary-button compact" disabled={creating} onClick={async () => { setCreating(true); await onCreate(code); }}><Plus /> 세션 생성</button>
+    </main>
   );
+}
+
+function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete, onClear, onSignOut }) {
+  const [tab, setTab] = useState('overview');
+  const [draft, setDraft] = useState(session);
+  const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState('');
+  const [filter, setFilter] = useState('all');
+  const joinUrl = `${window.location.origin}/join/${code}`;
+  const wallUrl = `${window.location.origin}/wall/${code}`;
+
+  useEffect(() => setDraft(session), [session]);
+
+  const copy = async (value, label) => {
+    await navigator.clipboard.writeText(value);
+    setCopied(label);
+    window.setTimeout(() => setCopied(''), 1400);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onUpdate({
+        title: draft.title,
+        status: draft.status,
+        moderationMode: draft.moderationMode,
+        display: draft.display,
+        input: draft.input,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const setNested = (section, key, value) => setDraft((current) => ({ ...current, [section]: { ...current[section], [key]: value } }));
+  const pending = messages.filter((message) => message.status === 'pending').length;
+  const approved = messages.filter((message) => message.status === 'approved').length;
+  const likes = messages.reduce((sum, message) => sum + Number(message.likes || 0), 0);
+  const filtered = messages.filter((message) => filter === 'all' || message.status === filter);
+
+  return (
+    <main className="admin-shell">
+      <aside className="admin-sidebar">
+        <Logo inverse />
+        <div className="session-chip"><span className={session.status} /><div><small>SESSION</small><b>{code}</b></div></div>
+        <nav>
+          <AdminNav icon={LayoutDashboard} label="Overview" active={tab === 'overview'} onClick={() => setTab('overview')} />
+          <AdminNav icon={Settings2} label="Experience" active={tab === 'experience'} onClick={() => setTab('experience')} />
+          <AdminNav icon={MessageCircleMore} label="Responses" count={pending || undefined} active={tab === 'responses'} onClick={() => setTab('responses')} />
+          <AdminNav icon={QrCode} label="Invite & QR" active={tab === 'invite'} onClick={() => setTab('invite')} />
+        </nav>
+        <div className="sidebar-bottom"><button onClick={() => window.open(wallUrl, '_blank')}><MonitorUp /> 월 화면 열기</button><button onClick={onSignOut}><LogOut /> 로그아웃</button></div>
+      </aside>
+
+      <section className="admin-main">
+        <header className="admin-topbar"><div><p className="eyebrow">{session.title}</p><h1>{adminTitle(tab)}</h1></div><div className="top-actions"><span className={`status-pill ${session.status !== 'live' ? 'paused' : ''}`}><span /> {session.status.toUpperCase()}</span><button className="secondary-button" onClick={() => window.open(wallUrl, '_blank')}><Eye /> Live wall</button></div></header>
+
+        {tab === 'overview' && (
+          <div className="admin-content">
+            <div className="metric-grid"><Metric icon={MessageCircleMore} label="전체 응답" value={messages.length} detail={`${approved}개 공개 중`} /><Metric icon={Clock3} label="승인 대기" value={pending} detail={pending ? '확인이 필요해요' : '모두 확인했어요'} accent={pending > 0} /><Metric icon={Heart} label="공감" value={likes} detail="참여자 반응 합계" /><Metric icon={Users} label="세션 상태" value={session.status === 'live' ? 'ON' : 'OFF'} detail={session.status === 'live' ? '응답을 받고 있어요' : '참여가 멈춰 있어요'} /></div>
+            <div className="overview-grid">
+              <article className="panel current-question"><div className="panel-heading"><div><p className="eyebrow">Current question</p><h2>지금 화면에 보이는 질문</h2></div><button className="text-button" onClick={() => setTab('experience')}>편집 <ChevronRight /></button></div><blockquote>{session.display.question}</blockquote><p>{session.display.subtitle}</p><button className={`session-toggle ${session.status}`} onClick={() => onUpdate({ status: session.status === 'live' ? 'paused' : 'live' })}>{session.status === 'live' ? <CirclePause /> : <CirclePlay />}{session.status === 'live' ? '참여 일시정지' : '참여 다시 시작'}</button></article>
+              <article className="panel quick-join"><div className="panel-heading"><div><p className="eyebrow">Quick join</p><h2>참여 QR</h2></div></div><div className="quick-qr"><QrImage value={joinUrl} size={150} /><div><strong>{code}</strong><p>QR을 앞 화면에 띄우거나 링크를 공유하세요.</p><button className="secondary-button" onClick={() => copy(joinUrl, 'join')}>{copied === 'join' ? <Check /> : <Copy />} {copied === 'join' ? '복사됨' : '링크 복사'}</button></div></div></article>
+            </div>
+            <article className="panel recent-admin"><div className="panel-heading"><div><p className="eyebrow">Latest responses</p><h2>최근 도착한 생각</h2></div><button className="text-button" onClick={() => setTab('responses')}>전체 보기 <ChevronRight /></button></div><ResponseRows messages={messages.slice(0, 5)} onModerate={onModerate} onDelete={onDelete} compact /></article>
+          </div>
+        )}
+
+        {tab === 'experience' && (
+          <div className="admin-content settings-layout">
+            <section className="panel settings-form">
+              <div className="panel-heading"><div><p className="eyebrow">Live content</p><h2>질문과 참여 화면</h2></div></div>
+              <Field label="세션 이름" value={draft.title} onChange={(value) => setDraft((current) => ({ ...current, title: value }))} />
+              <Field label="월 메인 질문" value={draft.display.question} onChange={(value) => setNested('display', 'question', value)} textarea />
+              <Field label="월 보조 문구" value={draft.display.subtitle} onChange={(value) => setNested('display', 'subtitle', value)} />
+              <div className="field-row"><Field label="모바일 질문" value={draft.input.question} onChange={(value) => setNested('input', 'question', value)} /><Field label="전송 버튼" value={draft.input.buttonText} onChange={(value) => setNested('input', 'buttonText', value)} /></div>
+              <Field label="모바일 안내 문구" value={draft.input.subtitle} onChange={(value) => setNested('input', 'subtitle', value)} />
+              <Field label="입력창 예시" value={draft.input.placeholder} onChange={(value) => setNested('input', 'placeholder', value)} />
+              <div className="field-row"><Field label="질문 크기" type="range" value={parseInt(draft.display.questionSize, 10) || 76} onChange={(value) => setNested('display', 'questionSize', `${value}px`)} /><SelectField label="응답 공개" value={draft.moderationMode} onChange={(value) => setDraft((current) => ({ ...current, moderationMode: value }))} options={[['post', '즉시 공개'], ['pre', '승인 후 공개']]} /></div>
+              <button className="primary-button save-settings" onClick={save} disabled={saving}>{saving ? <LoaderCircle className="spin" /> : <Check />} {saving ? '저장 중' : '변경사항 저장'}</button>
+            </section>
+            <aside className="phone-preview"><div className="phone-frame"><div className="phone-notch" /><p className="eyebrow">Today’s question</p><h3>{draft.input.question}</h3><p>{draft.input.subtitle}</p><div className="preview-textarea">{draft.input.placeholder}</div><div className="preview-button">{draft.input.buttonText}</div></div><p>모바일 미리보기</p></aside>
+          </div>
+        )}
+
+        {tab === 'responses' && (
+          <div className="admin-content">
+            <article className="panel response-panel"><div className="response-toolbar"><div className="filter-tabs">{[['all', '전체'], ['pending', '승인 대기'], ['approved', '공개'], ['hidden', '숨김']].map(([value, label]) => <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{label}<span>{value === 'all' ? messages.length : messages.filter((item) => item.status === value).length}</span></button>)}</div><div><button className="secondary-button" onClick={() => exportCsv(messages, code)}><Download /> CSV</button><button className="danger-button" onClick={() => window.confirm('이 세션의 모든 응답을 삭제할까요? 복구할 수 없습니다.') && onClear()}><Trash2 /> 전체 삭제</button></div></div><ResponseRows messages={filtered} onModerate={onModerate} onDelete={onDelete} /></article>
+          </div>
+        )}
+
+        {tab === 'invite' && (
+          <div className="admin-content invite-layout">
+            <article className="panel invite-hero"><p className="eyebrow">Invite participants</p><h2>QR을 스캔하고<br />바로 참여하세요.</h2><QrImage value={joinUrl} size={260} /><strong>{code}</strong><p>{joinUrl}</p></article>
+            <section className="invite-actions"><article className="panel"><QrCode /><div><h3>참여자 모바일</h3><p>답변을 작성하고 다른 참여자의 생각에 공감하는 화면입니다.</p><button className="secondary-button" onClick={() => copy(joinUrl, 'mobile')}>{copied === 'mobile' ? <Check /> : <Copy />} 링크 복사</button></div></article><article className="panel"><MonitorUp /><div><h3>앞 모니터 Live Wall</h3><p>질문, QR, 참여자의 응답이 실시간으로 반영되는 화면입니다.</p><div className="inline-actions"><button className="secondary-button" onClick={() => copy(wallUrl, 'wall')}>{copied === 'wall' ? <Check /> : <Copy />} 링크 복사</button><button className="primary-button compact" onClick={() => window.open(wallUrl, '_blank')}><Eye /> 열기</button></div></div></article></section>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function adminTitle(tab) {
+  return { overview: '오늘의 세션', experience: '경험 설정', responses: '응답 관리', invite: '참여 초대' }[tab];
+}
+
+function AdminNav({ icon, label, count, active, onClick }) {
+  const IconComponent = icon;
+  return <button className={active ? 'active' : ''} onClick={onClick}><IconComponent /> <span>{label}</span>{count && <b>{count}</b>}</button>;
+}
+
+function Metric({ icon, label, value, detail, accent }) {
+  const IconComponent = icon;
+  return <article className={`metric-card ${accent ? 'accent' : ''}`}><div><span><IconComponent /></span><small>{label}</small></div><strong>{value}</strong><p>{detail}</p></article>;
+}
+
+function Field({ label, value, onChange, textarea = false, type = 'text' }) {
+  return <label className="admin-field"><span>{label}{type === 'range' && <b>{value}px</b>}</span>{textarea ? <textarea value={value} onChange={(event) => onChange(event.target.value)} /> : <input type={type} min={42} max={120} value={value} onChange={(event) => onChange(event.target.value)} />}</label>;
+}
+
+function SelectField({ label, value, onChange, options }) {
+  return <label className="admin-field"><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)}>{options.map(([optionValue, text]) => <option key={optionValue} value={optionValue}>{text}</option>)}</select></label>;
+}
+
+function ResponseRows({ messages, onModerate, onDelete, compact = false }) {
+  if (!messages.length) return <div className="empty-responses"><MessageCircleMore /><p>아직 도착한 응답이 없습니다.</p></div>;
+  return <div className={`response-list ${compact ? 'compact' : ''}`}>{messages.map((message) => <article className="response-row" key={message.id}><span className="response-aura" style={{ background: getAuraColor(message.scores) }} /><div className="response-copy"><p>{message.text}</p><span>#{message.id.slice(0, 6).toUpperCase()} · {formatTime(message.createdAt)}</span></div><span className={`moderation-status ${message.status}`}>{message.status === 'approved' ? '공개' : message.status === 'pending' ? '대기' : '숨김'}</span><span className="like-count"><Heart /> {message.likes || 0}</span><div className="response-actions">{message.status !== 'approved' && <button title="공개" onClick={() => onModerate(message.id, 'approved')}><Eye /></button>}{message.status === 'approved' && <button title="숨기기" onClick={() => onModerate(message.id, 'hidden')}><EyeOff /></button>}<button className="delete" title="삭제" onClick={() => window.confirm('이 응답을 삭제할까요?') && onDelete(message.id)}><Trash2 /></button></div></article>)}</div>;
+}
+
+function formatTime(timestamp) {
+  if (!timestamp?.toDate) return '방금 전';
+  return timestamp.toDate().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function exportCsv(messages, code) {
+  const header = ['id', 'text', 'status', 'likes', 'positive', 'calm', 'energetic', 'deep'];
+  const rows = messages.map((message) => [message.id, message.text, message.status, message.likes || 0, message.scores?.POSITIVE || 0, message.scores?.CALM || 0, message.scores?.ENERGETIC || 0, message.scores?.DEEP || 0]);
+  const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(',')).join('\n');
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' }));
+  link.download = `unframe-${code}-responses.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
 }

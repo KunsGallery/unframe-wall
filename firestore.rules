@@ -1,0 +1,85 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin(app) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/artifacts/$(app)/admins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/artifacts/$(app)/admins/$(request.auth.uid)).data.active != false;
+    }
+
+    function sessionData(app, code) {
+      return get(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)).data;
+    }
+
+    match /artifacts/{app}/admins/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /artifacts/{app}/sessions/{code} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin(app);
+
+      match /messages/{messageId} {
+        allow read: if isAdmin(app) || (signedIn() && resource.data.status == 'approved');
+
+        allow create: if signedIn()
+          && sessionData(app, code).status == 'live'
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 180
+          && request.resource.data.likes == 0
+          && (
+            (sessionData(app, code).moderationMode == 'pre' && request.resource.data.status == 'pending')
+            || (sessionData(app, code).moderationMode != 'pre' && request.resource.data.status == 'approved')
+          )
+          && getAfter(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)).data.lastSubmittedAt == request.time;
+
+        allow update: if isAdmin(app) || (
+          signedIn()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes'])
+          && request.resource.data.likes >= 0
+          && (
+            (
+              request.resource.data.likes == resource.data.likes + 1
+              && existsAfter(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/likes/$(messageId))
+            ) || (
+              request.resource.data.likes == resource.data.likes - 1
+              && !existsAfter(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/likes/$(messageId))
+            )
+          )
+        );
+        allow delete: if isAdmin(app);
+      }
+
+      match /participants/{uid} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow create: if signedIn()
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['lastSubmittedAt'])
+          && request.resource.data.lastSubmittedAt == request.time;
+        allow update: if signedIn()
+          && request.auth.uid == uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSubmittedAt'])
+          && request.resource.data.lastSubmittedAt == request.time
+          && request.time > resource.data.lastSubmittedAt + duration.value(3, 's');
+        allow delete: if false;
+      }
+
+      match /participants/{uid}/likes/{messageId} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow create: if signedIn()
+          && request.auth.uid == uid
+          && !exists(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(uid)/likes/$(messageId));
+        allow delete: if signedIn() && request.auth.uid == uid;
+        allow update: if false;
+      }
+    }
+  }
+}
