@@ -61,9 +61,9 @@ import {
 import { appId, auth, db, isFirebaseReady } from './lib/firebase';
 import {
   AURA_THEMES,
+  createAuraSpectrum,
   createSessionCode,
   DEFAULT_SESSION,
-  fallbackAura,
   getAuraColor,
   mergeSession,
   normalizeCode,
@@ -184,7 +184,7 @@ export default function App() {
 
   const submitMessage = async (text) => {
     if (!user || session.status !== 'live') throw new Error('현재 참여가 잠시 멈춰 있습니다.');
-    const scores = await analyzeAura(text);
+    const scores = createAuraSpectrum(text);
     const payload = {
       text: text.trim(),
       scores,
@@ -288,22 +288,6 @@ export default function App() {
       {notice && <div className="toast"><Check size={16} /> {notice}</div>}
     </div>
   );
-}
-
-async function analyzeAura(text) {
-  const endpoint = import.meta.env.VITE_AI_PROXY_URL || '/.netlify/functions/analyze-aura';
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    if (!response.ok) throw new Error('Aura analysis unavailable');
-    const result = await response.json();
-    return result.scores;
-  } catch {
-    return fallbackAura(text);
-  }
 }
 
 function ConfigurationRequired() {
@@ -433,7 +417,7 @@ function VisitorExperience({ session, messages, likedIds, onLike, onSubmit }) {
           <div className="composer-meta"><span>{text.length} / 180</span><span>익명으로 공유됩니다</span></div>
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button" disabled={!text.trim() || sending || isPaused}>
-            {sending ? <><LoaderCircle className="spin" /> Aura 분석 중</> : <><Send /> {session.input.buttonText}</>}
+            {sending ? <><LoaderCircle className="spin" /> 생각 보내는 중</> : <><Send /> {session.input.buttonText}</>}
           </button>
         </form>
         <div className="event-guide"><Sparkles /><p><b>Aura Ticket</b>{session.input.eventGuide}</p></div>
@@ -788,8 +772,8 @@ function formatTime(timestamp) {
 }
 
 function exportCsv(messages, code) {
-  const header = ['id', 'text', 'status', 'likes', 'positive', 'calm', 'energetic', 'deep'];
-  const rows = messages.map((message) => [message.id, message.text, message.status, message.likes || 0, message.scores?.POSITIVE || 0, message.scores?.CALM || 0, message.scores?.ENERGETIC || 0, message.scores?.DEEP || 0]);
+  const header = ['id', 'text', 'status', 'likes', 'blue', 'mint', 'orange', 'violet'];
+  const rows = messages.map((message) => [message.id, message.text, message.status, message.likes || 0, message.scores?.BLUE || 0, message.scores?.MINT || 0, message.scores?.ORANGE || 0, message.scores?.VIOLET || 0]);
   const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(',')).join('\n');
   const link = document.createElement('a');
   link.href = URL.createObjectURL(new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' }));

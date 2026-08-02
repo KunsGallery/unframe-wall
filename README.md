@@ -20,13 +20,7 @@ npm install
 npm run dev
 ```
 
-Netlify Function까지 함께 테스트하려면 Netlify CLI로 실행합니다.
-
-```bash
-npx netlify dev
-```
-
-AI 프록시가 연결되지 않은 로컬 Vite 환경에서는 텍스트로부터 결정론적인 Aura 점수를 생성하므로 참여 흐름은 계속 동작합니다.
+Aura 색상은 외부 AI나 API 호출 없이 입력 문장에서 일관된 시각 스펙트럼을 생성합니다.
 
 ## Firebase 설정
 
@@ -51,16 +45,6 @@ npx firebase-tools deploy --only firestore:rules
 ```
 
 관리자 문서는 클라이언트에서 생성하거나 변경할 수 없도록 규칙으로 차단되어 있습니다.
-
-## Netlify 환경 변수
-
-Firebase의 `VITE_...` 변수와 함께 다음 서버 전용 변수를 설정합니다.
-
-- `GEMINI_API_KEY`
-- `GEMINI_MODEL` — 기본값 `gemini-3.5-flash`
-- `PUBLIC_SITE_URL` — 배포된 사이트 origin
-
-`GEMINI_API_KEY`에는 `VITE_` 접두사를 붙이지 마세요. 브라우저 번들에 포함되지 않고 `netlify/functions/analyze-aura.mjs`에서만 사용됩니다.
 
 ## 데이터 구조
 

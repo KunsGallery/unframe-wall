@@ -21,10 +21,10 @@ export const DEFAULT_SESSION = {
 };
 
 export const AURA_THEMES = {
-  POSITIVE: { rgb: [22, 72, 255], label: 'Joy', color: '#1648ff' },
-  CALM: { rgb: [56, 189, 167], label: 'Calm', color: '#38bda7' },
-  ENERGETIC: { rgb: [255, 142, 60], label: 'Power', color: '#ff8e3c' },
-  DEEP: { rgb: [136, 92, 246], label: 'Deep', color: '#885cf6' },
+  BLUE: { rgb: [22, 72, 255], label: 'Blue', color: '#1648ff' },
+  MINT: { rgb: [56, 189, 167], label: 'Mint', color: '#38bda7' },
+  ORANGE: { rgb: [255, 142, 60], label: 'Orange', color: '#ff8e3c' },
+  VIOLET: { rgb: [136, 92, 246], label: 'Violet', color: '#885cf6' },
 };
 
 export const mergeSession = (data = {}) => ({
@@ -43,7 +43,9 @@ export const createSessionCode = () => {
 };
 
 export const getAuraColor = (scores = {}) => {
-  const normalized = { POSITIVE: 25, CALM: 25, ENERGETIC: 25, DEEP: 25, ...scores };
+  const normalized = Object.fromEntries(
+    Object.keys(AURA_THEMES).map((key) => [key, Number(scores[key] ?? 25)]),
+  );
   const total = Object.values(normalized).reduce((sum, score) => sum + Number(score || 0), 0) || 100;
   const rgb = [0, 1, 2].map((channel) =>
     Math.round(
@@ -56,7 +58,7 @@ export const getAuraColor = (scores = {}) => {
   return `rgb(${rgb.join(', ')})`;
 };
 
-export const fallbackAura = (text) => {
+export const createAuraSpectrum = (text) => {
   const seed = Array.from(text).reduce((sum, char) => sum + char.charCodeAt(0), 0);
   const raw = [
     20 + (seed % 31),
