@@ -1,6 +1,7 @@
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 
 const env = import.meta.env;
 const canvasConfig = globalThis.__firebase_config;
@@ -22,11 +23,13 @@ export const isFirebaseReady = Boolean(canvasConfig || firebaseConfig.apiKey);
 let app;
 let auth;
 let db;
+let storage;
 
 if (isFirebaseReady) {
   app = getApps().length ? getApp() : initializeApp(firebaseConfig);
   auth = getAuth(app);
   db = getFirestore(app);
+  storage = getStorage(app);
 }
 
-export { app, auth, db };
+export { app, auth, db, storage };

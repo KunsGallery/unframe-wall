@@ -2,6 +2,12 @@ export const DEFAULT_SESSION = {
   title: 'UNFRAME LIVE',
   status: 'live',
   moderationMode: 'post',
+  stage: {
+    mode: 'wall',
+    artworkId: null,
+    phase: null,
+    runId: null,
+  },
   createdAt: null,
   display: {
     question: '지금, 당신의 마음에 남은 장면은 무엇인가요?',
@@ -32,6 +38,7 @@ export const mergeSession = (data = {}) => ({
   ...data,
   display: { ...DEFAULT_SESSION.display, ...(data.display || {}) },
   input: { ...DEFAULT_SESSION.input, ...(data.input || {}) },
+  stage: { ...DEFAULT_SESSION.stage, ...(data.stage || {}) },
 });
 
 export const normalizeCode = (value = '') => value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
@@ -79,7 +86,7 @@ export const resolveRoute = () => {
   if (legacyView) return { view: legacyView === 'display' ? 'wall' : legacyView, code: legacyCode };
 
   const [view, rawCode] = window.location.pathname.split('/').filter(Boolean);
-  if (['join', 'wall', 'admin'].includes(view)) return { view, code: normalizeCode(rawCode) };
+  if (['join', 'wall', 'admin', 'remote'].includes(view)) return { view, code: normalizeCode(rawCode) };
   return { view: 'home', code: '' };
 };
 

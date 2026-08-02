@@ -58,6 +58,75 @@ service cloud.firestore {
         allow delete: if isAdmin(app);
       }
 
+      match /artworks/{artworkId} {
+        allow read: if signedIn();
+        allow create, delete: if isAdmin(app);
+        allow update: if isAdmin(app) || (
+          signedIn()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['submissionCount', 'lastSubmissionId'])
+          && request.resource.data.submissionCount == resource.data.submissionCount + 1
+          && request.resource.data.lastSubmissionId == sessionData(app, code).stage.runId + '_' + request.auth.uid
+          && !exists(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/artworks/$(artworkId)/titles/$(request.resource.data.lastSubmissionId))
+          && existsAfter(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/artworks/$(artworkId)/titles/$(request.resource.data.lastSubmissionId))
+        );
+
+        match /titles/{titleId} {
+          allow read: if isAdmin(app) || (
+            signedIn()
+            && (
+              titleId == sessionData(app, code).stage.runId + '_' + request.auth.uid
+              || (
+                sessionData(app, code).stage.mode == 'artwork'
+                && sessionData(app, code).stage.artworkId == artworkId
+                && resource.data.runId == sessionData(app, code).stage.runId
+                && sessionData(app, code).stage.phase in ['vote', 'reveal']
+              )
+            )
+          );
+          allow create: if signedIn()
+            && titleId == sessionData(app, code).stage.runId + '_' + request.auth.uid
+            && sessionData(app, code).stage.mode == 'artwork'
+            && sessionData(app, code).stage.artworkId == artworkId
+            && sessionData(app, code).stage.phase == 'collect'
+            && request.resource.data.userId == request.auth.uid
+            && request.resource.data.artworkId == artworkId
+            && request.resource.data.runId == sessionData(app, code).stage.runId
+            && request.resource.data.text is string
+            && request.resource.data.text.size() > 0
+            && request.resource.data.text.size() <= 60
+            && request.resource.data.likes == 0
+            && getAfter(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/artworks/$(artworkId)).data.submissionCount == get(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/artworks/$(artworkId)).data.submissionCount + 1;
+          allow update: if isAdmin(app) || (
+            signedIn()
+            && sessionData(app, code).stage.mode == 'artwork'
+            && sessionData(app, code).stage.artworkId == artworkId
+            && sessionData(app, code).stage.phase == 'vote'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes'])
+            && request.resource.data.likes >= 0
+            && (
+              (
+                request.resource.data.likes == resource.data.likes + 1
+                && existsAfter(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/titleVotes/$(titleId))
+              ) || (
+                request.resource.data.likes == resource.data.likes - 1
+                && !existsAfter(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/titleVotes/$(titleId))
+              )
+            )
+          );
+          allow delete: if isAdmin(app);
+        }
+      }
+
+      match /artworkDetails/{artworkId} {
+        allow read: if isAdmin(app) || (
+          signedIn()
+          && sessionData(app, code).stage.mode == 'artwork'
+          && sessionData(app, code).stage.artworkId == artworkId
+          && sessionData(app, code).stage.phase == 'reveal'
+        );
+        allow create, update, delete: if isAdmin(app);
+      }
+
       match /participants/{uid} {
         allow read: if signedIn() && request.auth.uid == uid;
         allow create: if signedIn()
@@ -78,6 +147,21 @@ service cloud.firestore {
           && request.auth.uid == uid
           && !exists(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(uid)/likes/$(messageId));
         allow delete: if signedIn() && request.auth.uid == uid;
+        allow update: if false;
+      }
+
+      match /participants/{uid}/titleVotes/{titleId} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow create: if signedIn()
+          && request.auth.uid == uid
+          && sessionData(app, code).stage.mode == 'artwork'
+          && sessionData(app, code).stage.phase == 'vote'
+          && request.resource.data.artworkId == sessionData(app, code).stage.artworkId
+          && !exists(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(uid)/titleVotes/$(titleId));
+        allow delete: if signedIn()
+          && request.auth.uid == uid
+          && sessionData(app, code).stage.mode == 'artwork'
+          && sessionData(app, code).stage.phase == 'vote';
         allow update: if false;
       }
     }

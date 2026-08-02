@@ -1,0 +1,23 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin(app) {
+      return signedIn()
+        && firestore.exists(/databases/(default)/documents/artifacts/$(app)/admins/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/artifacts/$(app)/admins/$(request.auth.uid)).data.active != false;
+    }
+
+    match /artifacts/{app}/sessions/{code}/artworks/{artworkId}/{fileName} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin(app)
+        && request.resource.size < 12 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp)');
+      allow delete: if isAdmin(app);
+    }
+  }
+}

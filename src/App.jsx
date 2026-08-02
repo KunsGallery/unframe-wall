@@ -5,6 +5,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  increment,
   limit,
   onSnapshot,
   query,
@@ -22,6 +23,7 @@ import {
   signInWithEmailAndPassword,
   signOut,
 } from 'firebase/auth';
+import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import QRCode from 'qrcode';
 import confetti from 'canvas-confetti';
 import { toPng } from 'html-to-image';
@@ -40,6 +42,7 @@ import {
   Eye,
   EyeOff,
   Heart,
+  Images,
   KeyRound,
   LayoutDashboard,
   LoaderCircle,
@@ -58,7 +61,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { appId, auth, db, isFirebaseReady } from './lib/firebase';
+import { appId, auth, db, isFirebaseReady, storage } from './lib/firebase';
 import {
   AURA_THEMES,
   createAuraSpectrum,
@@ -70,10 +73,20 @@ import {
   resolveRoute,
   routeTo,
 } from './lib/session';
+import {
+  ArtworkManager,
+  ArtworkParticipant,
+  ArtworkStage,
+  RemoteController,
+} from './components/ArtworkExperience';
 
 const sessionRef = (code) => doc(db, 'artifacts', appId, 'sessions', code);
 const messagesRef = (code) => collection(db, 'artifacts', appId, 'sessions', code, 'messages');
 const likesRef = (code, uid) => collection(db, 'artifacts', appId, 'sessions', code, 'participants', uid, 'likes');
+const artworksRef = (code) => collection(db, 'artifacts', appId, 'sessions', code, 'artworks');
+const artworkDetailsRef = (code) => collection(db, 'artifacts', appId, 'sessions', code, 'artworkDetails');
+const titlesRef = (code, artworkId) => collection(db, 'artifacts', appId, 'sessions', code, 'artworks', artworkId, 'titles');
+const titleVotesRef = (code, uid) => collection(db, 'artifacts', appId, 'sessions', code, 'participants', uid, 'titleVotes');
 
 export default function App() {
   const [route, setRoute] = useState(resolveRoute);
@@ -83,6 +96,10 @@ export default function App() {
   const [session, setSession] = useState(undefined);
   const [messages, setMessages] = useState([]);
   const [likedIds, setLikedIds] = useState(new Set());
+  const [artworks, setArtworks] = useState([]);
+  const [artworkDetails, setArtworkDetails] = useState([]);
+  const [artworkTitles, setArtworkTitles] = useState([]);
+  const [votedTitleIds, setVotedTitleIds] = useState(new Set());
   const [ticket, setTicket] = useState(null);
   const [notice, setNotice] = useState('');
 
@@ -155,6 +172,71 @@ export default function App() {
       stopLikes();
     };
   }, [route.code, route.view, user, isAdmin]);
+
+  useEffect(() => {
+    if (!db || !route.code || !user) return undefined;
+    const stopArtworks = onSnapshot(
+      artworksRef(route.code),
+      (snapshot) => {
+        const next = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+        next.sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+        setArtworks(next);
+      },
+      () => setArtworks([]),
+    );
+    const stopVotes = onSnapshot(
+      titleVotesRef(route.code, user.uid),
+      (snapshot) => setVotedTitleIds(new Set(snapshot.docs.map((item) => item.id))),
+      () => setVotedTitleIds(new Set()),
+    );
+    return () => {
+      stopArtworks();
+      stopVotes();
+    };
+  }, [route.code, user]);
+
+  useEffect(() => {
+    if (!db || !route.code || !user) return undefined;
+    const activeId = session?.stage?.artworkId;
+    const source = isAdmin
+      ? artworkDetailsRef(route.code)
+      : session?.stage?.phase === 'reveal' && activeId
+        ? doc(artworkDetailsRef(route.code), activeId)
+        : null;
+    if (!source) return undefined;
+    return onSnapshot(
+      source,
+      (snapshot) => {
+        const next = 'docs' in snapshot
+          ? snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+          : snapshot.exists() ? [{ id: snapshot.id, ...snapshot.data() }] : [];
+        setArtworkDetails(next);
+      },
+      () => setArtworkDetails([]),
+    );
+  }, [route.code, user, isAdmin, session?.stage?.artworkId, session?.stage?.phase]);
+
+  useEffect(() => {
+    const artworkId = session?.stage?.artworkId;
+    const runId = session?.stage?.runId;
+    if (!db || !route.code || !user || !artworkId || !runId) return undefined;
+    const canSeeAllTitles = isAdmin || ['vote', 'reveal'].includes(session.stage.phase);
+    const source = canSeeAllTitles
+      ? query(titlesRef(route.code, artworkId), where('runId', '==', runId))
+      : doc(titlesRef(route.code, artworkId), `${runId}_${user.uid}`);
+    const stopTitles = onSnapshot(
+      source,
+      (snapshot) => {
+        const next = 'docs' in snapshot
+          ? snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+          : snapshot.exists() ? [{ id: snapshot.id, ...snapshot.data() }] : [];
+        next.sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
+        setArtworkTitles(next);
+      },
+      () => setArtworkTitles([]),
+    );
+    return stopTitles;
+  }, [route.code, user, isAdmin, session?.stage?.artworkId, session?.stage?.phase, session?.stage?.runId]);
 
   const showNotice = (message) => {
     setNotice(message);
@@ -238,6 +320,124 @@ export default function App() {
     showNotice('모든 응답을 삭제했습니다.');
   };
 
+  const uploadArtwork = async ({ file, title, artist, description }) => {
+    if (!isAdmin || !storage) throw new Error('작품을 업로드할 관리자 권한이 필요합니다.');
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw new Error('JPG, PNG, WEBP 이미지만 등록할 수 있습니다.');
+    if (file.size >= 12 * 1024 * 1024) throw new Error('이미지는 12MB 미만으로 등록해 주세요.');
+    const artworkDoc = doc(artworksRef(route.code));
+    const extension = file.name.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+    const path = `artifacts/${appId}/sessions/${route.code}/artworks/${artworkDoc.id}/original.${extension}`;
+    const target = storageRef(storage, path);
+    await uploadBytes(target, file, { contentType: file.type, cacheControl: 'public,max-age=31536000,immutable' });
+    const imageUrl = await getDownloadURL(target);
+    const batch = writeBatch(db);
+    batch.set(artworkDoc, {
+      imageUrl,
+      storagePath: path,
+      submissionCount: 0,
+      order: Date.now(),
+      createdAt: serverTimestamp(),
+      createdBy: user.uid,
+    });
+    batch.set(doc(artworkDetailsRef(route.code), artworkDoc.id), {
+      title: title.trim(),
+      artist: artist.trim(),
+      description: description.trim(),
+      artworkId: artworkDoc.id,
+      updatedAt: serverTimestamp(),
+    });
+    try {
+      await batch.commit();
+    } catch (error) {
+      await deleteObject(target).catch(() => undefined);
+      throw error;
+    }
+    showNotice('작품을 등록했습니다.');
+  };
+
+  const removeArtwork = async (artwork) => {
+    if (!isAdmin) return;
+    let titleSnapshot = await getDocs(query(titlesRef(route.code, artwork.id), limit(400)));
+    while (!titleSnapshot.empty) {
+      const titleBatch = writeBatch(db);
+      titleSnapshot.docs.forEach((item) => titleBatch.delete(item.ref));
+      await titleBatch.commit();
+      titleSnapshot = await getDocs(query(titlesRef(route.code, artwork.id), limit(400)));
+    }
+    const batch = writeBatch(db);
+    batch.delete(doc(artworksRef(route.code), artwork.id));
+    batch.delete(doc(artworkDetailsRef(route.code), artwork.id));
+    await batch.commit();
+    if (artwork.storagePath && storage) {
+      await deleteObject(storageRef(storage, artwork.storagePath)).catch(() => undefined);
+    }
+    if (session.stage?.artworkId === artwork.id) {
+      await updateSession({ stage: { mode: 'wall', artworkId: null, phase: null } });
+    }
+    showNotice('작품을 삭제했습니다.');
+  };
+
+  const startArtwork = async (artworkId) => {
+    const runId = crypto.randomUUID().replaceAll('-', '').slice(0, 10);
+    const batch = writeBatch(db);
+    batch.update(doc(artworksRef(route.code), artworkId), { submissionCount: 0, currentRunId: runId, lastSubmissionId: null });
+    batch.update(sessionRef(route.code), {
+      status: 'live',
+      stage: { mode: 'artwork', artworkId, phase: 'collect', runId },
+      updatedAt: serverTimestamp(),
+    });
+    await batch.commit();
+    showNotice('작품 제목 수집을 시작했습니다.');
+  };
+
+  const setArtworkPhase = (phase) => {
+    if (!session.stage?.artworkId) return Promise.resolve();
+    return updateSession({ stage: { ...session.stage, mode: 'artwork', phase } });
+  };
+
+  const stopArtwork = () => updateSession({ stage: { mode: 'wall', artworkId: null, phase: null } });
+
+  const submitArtworkTitle = async (text) => {
+    const artworkId = session.stage?.artworkId;
+    const runId = session.stage?.runId;
+    if (!user || session.stage?.mode !== 'artwork' || session.stage?.phase !== 'collect' || !artworkId || !runId) {
+      throw new Error('현재는 제목을 제출할 수 없습니다.');
+    }
+    const titleDoc = doc(titlesRef(route.code, artworkId), `${runId}_${user.uid}`);
+    if ((await getDoc(titleDoc)).exists()) throw new Error('이 작품에는 이미 제목을 제출했습니다.');
+    const artworkDoc = doc(artworksRef(route.code), artworkId);
+    const batch = writeBatch(db);
+    batch.set(titleDoc, {
+      text: text.trim(),
+      artworkId,
+      runId,
+      userId: user.uid,
+      likes: 0,
+      createdAt: serverTimestamp(),
+    });
+    batch.update(artworkDoc, { submissionCount: increment(1), lastSubmissionId: titleDoc.id });
+    await batch.commit();
+  };
+
+  const toggleTitleVote = async (title) => {
+    if (!user || session.stage?.phase !== 'vote') return;
+    const artworkId = session.stage.artworkId;
+    const voteDoc = doc(titleVotesRef(route.code, user.uid), title.id);
+    const titleDoc = doc(titlesRef(route.code, artworkId), title.id);
+    await runTransaction(db, async (transaction) => {
+      const [voteSnap, titleSnap] = await Promise.all([transaction.get(voteDoc), transaction.get(titleDoc)]);
+      if (!titleSnap.exists()) return;
+      const likes = Math.max(0, Number(titleSnap.data().likes || 0));
+      if (voteSnap.exists()) {
+        transaction.delete(voteDoc);
+        transaction.update(titleDoc, { likes: Math.max(0, likes - 1) });
+      } else {
+        transaction.set(voteDoc, { artworkId, createdAt: serverTimestamp() });
+        transaction.update(titleDoc, { likes: likes + 1 });
+      }
+    });
+  };
+
   if (!isFirebaseReady) return <ConfigurationRequired />;
   if (!authReady) return <LoadingScreen label="공간을 준비하고 있습니다" />;
 
@@ -246,24 +446,53 @@ export default function App() {
     : route.code && session?.id !== route.code
       ? undefined
       : session;
+  const activeArtworkId = visibleSession?.stage?.artworkId;
+  const activeRunId = visibleSession?.stage?.runId;
+  const mergedArtworks = artworks.map((artwork) => ({
+    ...artwork,
+    ...(artworkDetails.find((detail) => detail.id === artwork.id) || {}),
+  }));
+  const activeArtwork = mergedArtworks.find((artwork) => artwork.id === activeArtworkId) || null;
+  const activeTitles = artworkTitles.filter((title) => title.artworkId === activeArtworkId && title.runId === activeRunId);
+  const myArtworkTitle = activeTitles.find((title) => title.userId === user?.uid) || null;
+  const artworkMode = visibleSession?.stage?.mode === 'artwork';
 
   return (
     <div className="app-shell">
       {route.view === 'home' && <Home onJoin={(code) => routeTo('join', code)} onAdmin={() => routeTo('admin')} />}
       {route.view === 'join' && (
         <SessionGate session={visibleSession} code={route.code}>
-          <VisitorExperience
-            session={visibleSession}
-            messages={messages.slice(0, 12)}
-            likedIds={likedIds}
-            onLike={toggleLike}
-            onSubmit={submitMessage}
-          />
+          {artworkMode ? (
+            <ArtworkParticipant
+              artwork={activeArtwork}
+              phase={visibleSession.stage.phase}
+              titles={activeTitles}
+              myTitle={myArtworkTitle}
+              votedTitleIds={votedTitleIds}
+              onSubmit={submitArtworkTitle}
+              onVote={toggleTitleVote}
+            />
+          ) : (
+            <VisitorExperience
+              session={visibleSession}
+              messages={messages.slice(0, 12)}
+              likedIds={likedIds}
+              onLike={toggleLike}
+              onSubmit={submitMessage}
+            />
+          )}
         </SessionGate>
       )}
       {route.view === 'wall' && (
         <SessionGate session={visibleSession} code={route.code}>
-          <DisplayWall session={visibleSession} messages={messages} code={route.code} />
+          {artworkMode ? (
+            <ArtworkStage
+              artwork={activeArtwork}
+              phase={visibleSession.stage.phase}
+              titles={activeTitles}
+              submissionCount={activeArtwork?.submissionCount || 0}
+            />
+          ) : <DisplayWall session={visibleSession} messages={messages} code={route.code} />}
         </SessionGate>
       )}
       {route.view === 'admin' && (
@@ -278,11 +507,36 @@ export default function App() {
             onModerate={setMessageStatus}
             onDelete={deleteMessage}
             onClear={clearMessages}
+            artworks={mergedArtworks}
+            artworkTitles={activeTitles}
+            onUploadArtwork={uploadArtwork}
+            onDeleteArtwork={removeArtwork}
+            onStartArtwork={startArtwork}
+            onArtworkPhase={setArtworkPhase}
+            onStopArtwork={stopArtwork}
             onSignOut={() => signOut(auth)}
           />
         ) : (
           <AdminLogin user={user} />
         )
+      )}
+      {route.view === 'remote' && (
+        isAdmin ? (
+          <SessionGate session={visibleSession} code={route.code}>
+            <RemoteController
+              code={route.code}
+              session={visibleSession}
+              artworks={mergedArtworks}
+              activeArtwork={activeArtwork}
+              titleCount={activeArtwork?.submissionCount || 0}
+              onStart={startArtwork}
+              onPhase={setArtworkPhase}
+              onStop={stopArtwork}
+              onOpenWall={() => window.open(`${window.location.origin}/wall/${route.code}`, '_blank')}
+              onSignOut={() => signOut(auth)}
+            />
+          </SessionGate>
+        ) : <AdminLogin user={user} />
       )}
       {ticket && <SuccessTicket ticket={ticket} session={visibleSession} onClose={() => setTicket(null)} />}
       {notice && <div className="toast"><Check size={16} /> {notice}</div>}
@@ -586,11 +840,11 @@ function AdminLogin({ user }) {
   );
 }
 
-function AdminArea({ user, code, session, messages, onCreate, onUpdate, onModerate, onDelete, onClear, onSignOut }) {
+function AdminArea({ user, code, session, messages, onCreate, onUpdate, onModerate, onDelete, onClear, artworks, artworkTitles, onUploadArtwork, onDeleteArtwork, onStartArtwork, onArtworkPhase, onStopArtwork, onSignOut }) {
   if (!code) return <SessionCreator user={user} onCreate={onCreate} onSignOut={onSignOut} />;
   if (session === undefined) return <LoadingScreen label="관리자 콘솔을 불러오고 있습니다" />;
   if (session === null) return <MissingAdminSession code={code} onCreate={onCreate} />;
-  return <AdminConsole {...{ user, code, session, messages, onUpdate, onModerate, onDelete, onClear, onSignOut }} />;
+  return <AdminConsole {...{ user, code, session, messages, onUpdate, onModerate, onDelete, onClear, artworks, artworkTitles, onUploadArtwork, onDeleteArtwork, onStartArtwork, onArtworkPhase, onStopArtwork, onSignOut }} />;
 }
 
 function SessionCreator({ user, onCreate, onSignOut }) {
@@ -639,7 +893,7 @@ function MissingAdminSession({ code, onCreate }) {
   );
 }
 
-function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete, onClear, onSignOut }) {
+function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete, onClear, artworks, artworkTitles, onUploadArtwork, onDeleteArtwork, onStartArtwork, onArtworkPhase, onStopArtwork, onSignOut }) {
   const [tab, setTab] = useState('overview');
   const [draft, setDraft] = useState(session);
   const [saving, setSaving] = useState(false);
@@ -647,6 +901,7 @@ function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete,
   const [filter, setFilter] = useState('all');
   const joinUrl = `${window.location.origin}/join/${code}`;
   const wallUrl = `${window.location.origin}/wall/${code}`;
+  const remoteUrl = `${window.location.origin}/remote/${code}`;
 
   useEffect(() => setDraft(session), [session]);
 
@@ -685,6 +940,7 @@ function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete,
         <nav>
           <AdminNav icon={LayoutDashboard} label="Overview" active={tab === 'overview'} onClick={() => setTab('overview')} />
           <AdminNav icon={Settings2} label="Experience" active={tab === 'experience'} onClick={() => setTab('experience')} />
+          <AdminNav icon={Images} label="Artwork Title Lab" count={session.stage?.mode === 'artwork' ? artworkTitles.length || undefined : undefined} active={tab === 'artworks'} onClick={() => setTab('artworks')} />
           <AdminNav icon={MessageCircleMore} label="Responses" count={pending || undefined} active={tab === 'responses'} onClick={() => setTab('responses')} />
           <AdminNav icon={QrCode} label="Invite & QR" active={tab === 'invite'} onClick={() => setTab('invite')} />
         </nav>
@@ -728,10 +984,24 @@ function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete,
           </div>
         )}
 
+        {tab === 'artworks' && (
+          <ArtworkManager
+            artworks={artworks}
+            activeArtworkId={session.stage?.artworkId}
+            phase={session.stage?.phase}
+            titleCount={session.stage?.artworkId ? artworks.find((artwork) => artwork.id === session.stage.artworkId)?.submissionCount || 0 : 0}
+            onUpload={onUploadArtwork}
+            onDelete={onDeleteArtwork}
+            onStart={onStartArtwork}
+            onPhase={onArtworkPhase}
+            onStop={onStopArtwork}
+          />
+        )}
+
         {tab === 'invite' && (
           <div className="admin-content invite-layout">
             <article className="panel invite-hero"><p className="eyebrow">Invite participants</p><h2>QR을 스캔하고<br />바로 참여하세요.</h2><QrImage value={joinUrl} size={260} /><strong>{code}</strong><p>{joinUrl}</p></article>
-            <section className="invite-actions"><article className="panel"><QrCode /><div><h3>참여자 모바일</h3><p>답변을 작성하고 다른 참여자의 생각에 공감하는 화면입니다.</p><button className="secondary-button" onClick={() => copy(joinUrl, 'mobile')}>{copied === 'mobile' ? <Check /> : <Copy />} 링크 복사</button></div></article><article className="panel"><MonitorUp /><div><h3>앞 모니터 Live Wall</h3><p>질문, QR, 참여자의 응답이 실시간으로 반영되는 화면입니다.</p><div className="inline-actions"><button className="secondary-button" onClick={() => copy(wallUrl, 'wall')}>{copied === 'wall' ? <Check /> : <Copy />} 링크 복사</button><button className="primary-button compact" onClick={() => window.open(wallUrl, '_blank')}><Eye /> 열기</button></div></div></article></section>
+            <section className="invite-actions"><article className="panel"><QrCode /><div><h3>참여자 모바일</h3><p>답변을 작성하고 다른 참여자의 생각에 공감하는 화면입니다.</p><button className="secondary-button" onClick={() => copy(joinUrl, 'mobile')}>{copied === 'mobile' ? <Check /> : <Copy />} 링크 복사</button></div></article><article className="panel"><MonitorUp /><div><h3>앞 모니터 Live Wall</h3><p>질문, QR, 참여자의 응답이 실시간으로 반영되는 화면입니다.</p><div className="inline-actions"><button className="secondary-button" onClick={() => copy(wallUrl, 'wall')}>{copied === 'wall' ? <Check /> : <Copy />} 링크 복사</button><button className="primary-button compact" onClick={() => window.open(wallUrl, '_blank')}><Eye /> 열기</button></div></div></article><article className="panel"><Images /><div><h3>진행자 모바일 리모컨</h3><p>작품을 선택하고 제목 수집·투표·정답 공개를 휴대폰에서 제어합니다.</p><div className="remote-invite-compact"><QrImage value={remoteUrl} size={104} /><div className="inline-actions"><button className="secondary-button" onClick={() => copy(remoteUrl, 'remote')}>{copied === 'remote' ? <Check /> : <Copy />} 링크 복사</button><button className="primary-button compact" onClick={() => window.open(remoteUrl, '_blank')}><Eye /> 열기</button></div></div></div></article></section>
           </div>
         )}
       </section>
@@ -740,7 +1010,7 @@ function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete,
 }
 
 function adminTitle(tab) {
-  return { overview: '오늘의 세션', experience: '경험 설정', responses: '응답 관리', invite: '참여 초대' }[tab];
+  return { overview: '오늘의 세션', experience: '경험 설정', artworks: 'Artwork Title Lab', responses: '응답 관리', invite: '참여 초대' }[tab];
 }
 
 function AdminNav({ icon, label, count, active, onClick }) {
