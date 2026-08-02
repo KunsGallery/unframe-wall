@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react';
 import {
   ArrowLeft,
+  ArrowRight,
   Check,
   ChevronRight,
   Eye,
+  FileText,
   Heart,
   ImagePlus,
   Images,
@@ -235,21 +237,28 @@ export function ArtworkManager({ artworks, activeArtworkId, phase, titleCount, o
   );
 }
 
-export function RemoteController({ code, session, artworks, activeArtwork, titleCount, onStart, onPhase, onStop, onOpenWall, onSignOut }) {
+export function RemoteController({ code, session, artworks, activeArtwork, titleCount, decks, activeDeck, pdfPage, onStart, onPhase, onStop, onStartPdf, onPdfPage, onOpenWall, onSignOut }) {
   const stage = session.stage || { mode: 'wall' };
+  const isPdf = stage.mode === 'pdf' && activeDeck;
+  const isArtwork = stage.mode === 'artwork' && activeArtwork;
   return (
     <main className="remote-page">
       <header className="remote-header"><div><div className="participant-brand"><span /> UNFRAME REMOTE</div><p>{session.title} · {code}</p></div><button onClick={onSignOut}><Square /> 종료</button></header>
-      <section className={`remote-now ${stage.mode === 'artwork' ? 'artwork-live' : ''}`}>
-        <div className="remote-now-heading"><div><p className="eyebrow">Now on screen</p><h1>{stage.mode === 'artwork' ? phaseLabel[stage.phase] : '기본 Live Wall'}</h1></div><span><i /> LIVE</span></div>
-        {activeArtwork ? <div className="remote-active-art"><img src={activeArtwork.imageUrl} alt="현재 작품" /><div><h2>{activeArtwork.title || '제목 비공개 작품'}</h2><p>{activeArtwork.artist || '작가 정보 없음'}</p><strong>{titleCount}<span> titles</span></strong></div></div> : <div className="remote-wall-placeholder"><MonitorUp /><p>질문과 참여 QR이 앞 화면에 보입니다.</p></div>}
-        {activeArtwork && <div className="remote-phase-actions"><button className={stage.phase === 'collect' ? 'active' : ''} onClick={() => onPhase('collect')}><Sparkles /> 제목 받기</button><button className={stage.phase === 'vote' ? 'active' : ''} onClick={() => onPhase('vote')}><Vote /> 투표 열기</button><button className={stage.phase === 'reveal' ? 'active' : ''} onClick={() => onPhase('reveal')}><Eye /> 정답 공개</button></div>}
+      <section className={`remote-now ${isArtwork ? 'artwork-live' : ''} ${isPdf ? 'pdf-live' : ''}`}>
+        <div className="remote-now-heading"><div><p className="eyebrow">Now on screen</p><h1>{isArtwork ? phaseLabel[stage.phase] : isPdf ? 'PDF 발표 중' : '기본 Live Wall'}</h1></div><span><i /> LIVE</span></div>
+        {isArtwork ? <div className="remote-active-art"><img src={activeArtwork.imageUrl} alt="현재 작품" /><div><h2>{activeArtwork.title || '제목 비공개 작품'}</h2><p>{activeArtwork.artist || '작가 정보 없음'}</p><strong>{titleCount}<span> titles</span></strong></div></div> : isPdf ? <div className="remote-active-art remote-active-pdf"><img src={activeDeck.thumbnailUrl} alt="현재 PDF 표지" /><div><h2>{activeDeck.title}</h2><p>PDF PRESENTATION</p><strong>{pdfPage}<span> / {activeDeck.pageCount} pages</span></strong></div></div> : <div className="remote-wall-placeholder"><MonitorUp /><p>질문과 참여 QR이 앞 화면에 보입니다.</p></div>}
+        {isArtwork && <div className="remote-phase-actions"><button className={stage.phase === 'collect' ? 'active' : ''} onClick={() => onPhase('collect')}><Sparkles /> 제목 받기</button><button className={stage.phase === 'vote' ? 'active' : ''} onClick={() => onPhase('vote')}><Vote /> 투표 열기</button><button className={stage.phase === 'reveal' ? 'active' : ''} onClick={() => onPhase('reveal')}><Eye /> 정답 공개</button></div>}
+        {isPdf && <div className="remote-pdf-actions"><button onClick={() => onPdfPage(pdfPage - 1)} disabled={pdfPage <= 1}><ArrowLeft /> 이전 장</button><span><b>{pdfPage}</b> / {activeDeck.pageCount}</span><button onClick={() => onPdfPage(pdfPage + 1)} disabled={pdfPage >= activeDeck.pageCount}>다음 장 <ArrowRight /></button></div>}
       </section>
       <section className="remote-library">
         <div className="remote-section-title"><div><p className="eyebrow">Choose artwork</p><h2>작품 선택</h2></div><span>{artworks.length}</span></div>
         <div className="remote-art-scroll">{artworks.map((artwork) => <button className={activeArtwork?.id === artwork.id ? 'active' : ''} key={artwork.id} onClick={() => onStart(artwork.id)}><img src={artwork.imageUrl} alt={artwork.title || '작품'} /><span>{artwork.title || '제목 비공개'}</span>{activeArtwork?.id === artwork.id && <Play />}</button>)}</div>
       </section>
-      <footer className="remote-dock"><button onClick={onOpenWall}><MonitorUp /><span>화면 보기</span></button><button className="remote-home" onClick={onStop}><RotateCcw /><span>Live Wall</span></button>{activeArtwork ? <button className="remote-next" onClick={() => stage.phase === 'reveal' ? onStop() : onPhase(stage.phase === 'collect' ? 'vote' : 'reveal')}>{stage.phase === 'collect' ? <Vote /> : stage.phase === 'vote' ? <Eye /> : <RotateCcw />}<span>{stage.phase === 'collect' ? '투표로' : stage.phase === 'vote' ? '공개' : '마치기'}</span></button> : <button disabled><ArrowLeft /><span>작품 선택</span></button>}</footer>
+      <section className="remote-library remote-pdf-library">
+        <div className="remote-section-title"><div><p className="eyebrow">Choose presentation</p><h2>PDF 발표</h2></div><span>{decks.length}</span></div>
+        <div className="remote-art-scroll">{decks.map((deck) => <button className={activeDeck?.id === deck.id ? 'active' : ''} key={deck.id} onClick={() => onStartPdf(deck)}><img src={deck.thumbnailUrl} alt={`${deck.title} 표지`} /><span>{deck.title} · {deck.pageCount}p</span>{activeDeck?.id === deck.id ? <Play /> : <FileText />}</button>)}</div>
+      </section>
+      <footer className="remote-dock"><button onClick={onOpenWall}><MonitorUp /><span>화면 보기</span></button><button className="remote-home" onClick={onStop}><RotateCcw /><span>Live Wall</span></button>{isPdf ? <button className="remote-next" onClick={() => onPdfPage(pdfPage + 1)} disabled={pdfPage >= activeDeck.pageCount}><ArrowRight /><span>다음 장</span></button> : isArtwork ? <button className="remote-next" onClick={() => stage.phase === 'reveal' ? onStop() : onPhase(stage.phase === 'collect' ? 'vote' : 'reveal')}>{stage.phase === 'collect' ? <Vote /> : stage.phase === 'vote' ? <Eye /> : <RotateCcw />}<span>{stage.phase === 'collect' ? '투표로' : stage.phase === 'vote' ? '공개' : '마치기'}</span></button> : <button disabled><ArrowLeft /><span>자료 선택</span></button>}</footer>
     </main>
   );
 }

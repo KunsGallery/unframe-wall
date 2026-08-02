@@ -50,6 +50,7 @@ import {
   LogOut,
   MessageCircleMore,
   MonitorUp,
+  Presentation,
   Plus,
   QrCode,
   RefreshCw,
@@ -62,6 +63,8 @@ import {
   X,
 } from 'lucide-react';
 import { appId, auth, db, isFirebaseReady, storage } from './lib/firebase';
+import { themeStyle } from './lib/colorPalette';
+import { inspectPdf } from './lib/pdf';
 import {
   AURA_THEMES,
   createAuraSpectrum,
@@ -79,6 +82,8 @@ import {
   ArtworkStage,
   RemoteController,
 } from './components/ArtworkExperience';
+import { PosterThemePicker } from './components/SessionThemeEditor';
+import { PdfManager, PdfParticipant, PdfStage } from './components/PdfPresentation';
 
 const sessionRef = (code) => doc(db, 'artifacts', appId, 'sessions', code);
 const messagesRef = (code) => collection(db, 'artifacts', appId, 'sessions', code, 'messages');
@@ -87,6 +92,7 @@ const artworksRef = (code) => collection(db, 'artifacts', appId, 'sessions', cod
 const artworkDetailsRef = (code) => collection(db, 'artifacts', appId, 'sessions', code, 'artworkDetails');
 const titlesRef = (code, artworkId) => collection(db, 'artifacts', appId, 'sessions', code, 'artworks', artworkId, 'titles');
 const titleVotesRef = (code, uid) => collection(db, 'artifacts', appId, 'sessions', code, 'participants', uid, 'titleVotes');
+const decksRef = (code) => collection(db, 'artifacts', appId, 'sessions', code, 'decks');
 
 export default function App() {
   const [route, setRoute] = useState(resolveRoute);
@@ -100,6 +106,7 @@ export default function App() {
   const [artworkDetails, setArtworkDetails] = useState([]);
   const [artworkTitles, setArtworkTitles] = useState([]);
   const [votedTitleIds, setVotedTitleIds] = useState(new Set());
+  const [decks, setDecks] = useState([]);
   const [ticket, setTicket] = useState(null);
   const [notice, setNotice] = useState('');
 
@@ -197,6 +204,19 @@ export default function App() {
 
   useEffect(() => {
     if (!db || !route.code || !user) return undefined;
+    return onSnapshot(
+      decksRef(route.code),
+      (snapshot) => {
+        const next = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+        next.sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+        setDecks(next);
+      },
+      () => setDecks([]),
+    );
+  }, [route.code, user]);
+
+  useEffect(() => {
+    if (!db || !route.code || !user) return undefined;
     const activeId = session?.stage?.artworkId;
     const source = isAdmin
       ? artworkDetailsRef(route.code)
@@ -248,15 +268,49 @@ export default function App() {
     const normalized = normalizeCode(code || createSessionCode());
     const target = sessionRef(normalized);
     if ((await getDoc(target)).exists()) throw new Error('이미 사용 중인 참여 코드입니다.');
+    const { posterFile, ...rawInitial } = initial;
+    const sessionInitial = Object.fromEntries(Object.entries(rawInitial).filter(([, value]) => value !== undefined));
     await setDoc(target, {
       ...DEFAULT_SESSION,
-      ...initial,
+      ...sessionInitial,
       code: normalized,
       createdAt: serverTimestamp(),
       createdBy: user.uid,
       updatedAt: serverTimestamp(),
     });
+    try {
+      if (posterFile && sessionInitial.theme) await uploadPoster(normalized, posterFile, sessionInitial.theme);
+    } catch (error) {
+      await deleteDoc(target).catch(() => undefined);
+      throw error;
+    }
     routeTo('admin', normalized);
+  };
+
+  const uploadPoster = async (code, file, theme) => {
+    if (!isAdmin || !storage) throw new Error('포스터를 업로드할 관리자 권한이 필요합니다.');
+    const extension = file.name.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+    const version = crypto.randomUUID().replaceAll('-', '').slice(0, 12);
+    const path = `artifacts/${appId}/sessions/${code}/poster/${version}.${extension}`;
+    const target = storageRef(storage, path);
+    try {
+      await uploadBytes(target, file, { contentType: file.type, cacheControl: 'public,max-age=86400' });
+      const posterUrl = await getDownloadURL(target);
+      await updateDoc(sessionRef(code), { theme: { ...theme, posterUrl, storagePath: path }, updatedAt: serverTimestamp() });
+      return path;
+    } catch (error) {
+      await deleteObject(target).catch(() => undefined);
+      throw error;
+    }
+  };
+
+  const updateSessionTheme = async ({ file, theme }) => {
+    const previousPath = session.theme?.storagePath;
+    const nextPath = await uploadPoster(route.code, file, theme);
+    if (previousPath && previousPath !== nextPath) {
+      await deleteObject(storageRef(storage, previousPath)).catch(() => undefined);
+    }
+    showNotice('포스터와 컬러 테마를 적용했습니다.');
   };
 
   const updateSession = async (next) => {
@@ -397,6 +451,58 @@ export default function App() {
 
   const stopArtwork = () => updateSession({ stage: { mode: 'wall', artworkId: null, phase: null } });
 
+  const uploadPdf = async ({ file, title }) => {
+    if (!isAdmin || !storage) throw new Error('PDF를 업로드할 관리자 권한이 필요합니다.');
+    const { pageCount, thumbnail } = await inspectPdf(file);
+    const deckDoc = doc(decksRef(route.code));
+    const basePath = `artifacts/${appId}/sessions/${route.code}/decks/${deckDoc.id}`;
+    const filePath = `${basePath}/presentation.pdf`;
+    const thumbnailPath = `${basePath}/thumbnail.jpg`;
+    const fileTarget = storageRef(storage, filePath);
+    const thumbnailTarget = storageRef(storage, thumbnailPath);
+    try {
+      await Promise.all([
+        uploadBytes(fileTarget, file, { contentType: 'application/pdf', cacheControl: 'private,max-age=3600' }),
+        uploadBytes(thumbnailTarget, thumbnail, { contentType: 'image/jpeg', cacheControl: 'public,max-age=31536000,immutable' }),
+      ]);
+      const [fileUrl, thumbnailUrl] = await Promise.all([getDownloadURL(fileTarget), getDownloadURL(thumbnailTarget)]);
+      await setDoc(deckDoc, {
+        title: title.trim(), fileUrl, thumbnailUrl, filePath, thumbnailPath, pageCount,
+        fileSize: file.size, order: Date.now(), createdAt: serverTimestamp(), createdBy: user.uid,
+      });
+    } catch (error) {
+      await Promise.all([deleteObject(fileTarget).catch(() => undefined), deleteObject(thumbnailTarget).catch(() => undefined)]);
+      throw error;
+    }
+    showNotice(`${pageCount}페이지 PDF를 등록했습니다.`);
+  };
+
+  const removePdf = async (deck) => {
+    if (!isAdmin) return;
+    if (session.stage?.deckId === deck.id) await updateDoc(sessionRef(route.code), { stage: { mode: 'wall' }, updatedAt: serverTimestamp() });
+    await deleteDoc(doc(decksRef(route.code), deck.id));
+    await Promise.all([deck.filePath, deck.thumbnailPath].filter(Boolean).map((path) => deleteObject(storageRef(storage, path)).catch(() => undefined)));
+    showNotice('PDF 발표 자료를 삭제했습니다.');
+  };
+
+  const startPdf = async (deck) => {
+    await updateDoc(sessionRef(route.code), {
+      status: 'live',
+      stage: { mode: 'pdf', deckId: deck.id, page: 1, pageCount: deck.pageCount },
+      updatedAt: serverTimestamp(),
+    });
+    showNotice('PDF 발표를 시작했습니다.');
+  };
+
+  const setPdfPage = (page) => {
+    const active = decks.find((deck) => deck.id === session.stage?.deckId);
+    if (!active) return Promise.resolve();
+    const next = Math.min(active.pageCount, Math.max(1, Number(page)));
+    return updateDoc(sessionRef(route.code), { stage: { ...session.stage, mode: 'pdf', page: next }, updatedAt: serverTimestamp() });
+  };
+
+  const stopStage = () => updateSession({ stage: { mode: 'wall' } });
+
   const submitArtworkTitle = async (text) => {
     const artworkId = session.stage?.artworkId;
     const runId = session.stage?.runId;
@@ -456,9 +562,12 @@ export default function App() {
   const activeTitles = artworkTitles.filter((title) => title.artworkId === activeArtworkId && title.runId === activeRunId);
   const myArtworkTitle = activeTitles.find((title) => title.userId === user?.uid) || null;
   const artworkMode = visibleSession?.stage?.mode === 'artwork';
+  const pdfMode = visibleSession?.stage?.mode === 'pdf';
+  const activeDeck = decks.find((deck) => deck.id === visibleSession?.stage?.deckId) || null;
+  const pdfPage = Math.max(1, Number(visibleSession?.stage?.page || 1));
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" style={themeStyle(visibleSession?.theme)}>
       {route.view === 'home' && <Home onJoin={(code) => routeTo('join', code)} onAdmin={() => routeTo('admin')} />}
       {route.view === 'join' && (
         <SessionGate session={visibleSession} code={route.code}>
@@ -472,6 +581,8 @@ export default function App() {
               onSubmit={submitArtworkTitle}
               onVote={toggleTitleVote}
             />
+          ) : pdfMode ? (
+            <PdfParticipant deck={activeDeck} pageNumber={pdfPage} />
           ) : (
             <VisitorExperience
               session={visibleSession}
@@ -492,6 +603,8 @@ export default function App() {
               titles={activeTitles}
               submissionCount={activeArtwork?.submissionCount || 0}
             />
+          ) : pdfMode ? (
+            <PdfStage deck={activeDeck} pageNumber={pdfPage} sessionTitle={visibleSession.title} />
           ) : <DisplayWall session={visibleSession} messages={messages} code={route.code} />}
         </SessionGate>
       )}
@@ -514,6 +627,13 @@ export default function App() {
             onStartArtwork={startArtwork}
             onArtworkPhase={setArtworkPhase}
             onStopArtwork={stopArtwork}
+            decks={decks}
+            onUploadPdf={uploadPdf}
+            onDeletePdf={removePdf}
+            onStartPdf={startPdf}
+            onPdfPage={setPdfPage}
+            onStopStage={stopStage}
+            onUpdateTheme={updateSessionTheme}
             onSignOut={() => signOut(auth)}
           />
         ) : (
@@ -529,9 +649,14 @@ export default function App() {
               artworks={mergedArtworks}
               activeArtwork={activeArtwork}
               titleCount={activeArtwork?.submissionCount || 0}
+              decks={decks}
+              activeDeck={activeDeck}
+              pdfPage={pdfPage}
               onStart={startArtwork}
               onPhase={setArtworkPhase}
-              onStop={stopArtwork}
+              onStop={stopStage}
+              onStartPdf={startPdf}
+              onPdfPage={setPdfPage}
               onOpenWall={() => window.open(`${window.location.origin}/wall/${route.code}`, '_blank')}
               onSignOut={() => signOut(auth)}
             />
@@ -840,16 +965,17 @@ function AdminLogin({ user }) {
   );
 }
 
-function AdminArea({ user, code, session, messages, onCreate, onUpdate, onModerate, onDelete, onClear, artworks, artworkTitles, onUploadArtwork, onDeleteArtwork, onStartArtwork, onArtworkPhase, onStopArtwork, onSignOut }) {
+function AdminArea({ user, code, session, messages, onCreate, onUpdate, onModerate, onDelete, onClear, artworks, artworkTitles, onUploadArtwork, onDeleteArtwork, onStartArtwork, onArtworkPhase, onStopArtwork, decks, onUploadPdf, onDeletePdf, onStartPdf, onPdfPage, onStopStage, onUpdateTheme, onSignOut }) {
   if (!code) return <SessionCreator user={user} onCreate={onCreate} onSignOut={onSignOut} />;
   if (session === undefined) return <LoadingScreen label="관리자 콘솔을 불러오고 있습니다" />;
   if (session === null) return <MissingAdminSession code={code} onCreate={onCreate} />;
-  return <AdminConsole {...{ user, code, session, messages, onUpdate, onModerate, onDelete, onClear, artworks, artworkTitles, onUploadArtwork, onDeleteArtwork, onStartArtwork, onArtworkPhase, onStopArtwork, onSignOut }} />;
+  return <AdminConsole {...{ user, code, session, messages, onUpdate, onModerate, onDelete, onClear, artworks, artworkTitles, onUploadArtwork, onDeleteArtwork, onStartArtwork, onArtworkPhase, onStopArtwork, decks, onUploadPdf, onDeletePdf, onStartPdf, onPdfPage, onStopStage, onUpdateTheme, onSignOut }} />;
 }
 
 function SessionCreator({ user, onCreate, onSignOut }) {
   const [code, setCode] = useState(createSessionCode);
   const [title, setTitle] = useState('UNFRAME LIVE');
+  const [posterTheme, setPosterTheme] = useState(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
 
@@ -858,7 +984,7 @@ function SessionCreator({ user, onCreate, onSignOut }) {
     setCreating(true);
     setError('');
     try {
-      await onCreate(code, { title });
+      await onCreate(code, { title, posterFile: posterTheme?.file, theme: posterTheme?.theme });
     } catch (createError) {
       setError(createError.message);
     } finally {
@@ -874,6 +1000,7 @@ function SessionCreator({ user, onCreate, onSignOut }) {
         <form onSubmit={submit}>
           <label>세션 이름<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={50} /></label>
           <label>참여 코드<div className="code-input"><input value={code} onChange={(event) => setCode(normalizeCode(event.target.value))} minLength={4} /><button type="button" onClick={() => setCode(createSessionCode())}><RefreshCw /></button></div></label>
+          <PosterThemePicker value={posterTheme} onChange={setPosterTheme} />
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button" disabled={creating || code.length < 4}><Plus /> {creating ? '세션 만드는 중' : '세션 만들기'}</button>
         </form>
@@ -893,12 +1020,15 @@ function MissingAdminSession({ code, onCreate }) {
   );
 }
 
-function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete, onClear, artworks, artworkTitles, onUploadArtwork, onDeleteArtwork, onStartArtwork, onArtworkPhase, onStopArtwork, onSignOut }) {
+function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete, onClear, artworks, artworkTitles, onUploadArtwork, onDeleteArtwork, onStartArtwork, onArtworkPhase, onStopArtwork, decks, onUploadPdf, onDeletePdf, onStartPdf, onPdfPage, onStopStage, onUpdateTheme, onSignOut }) {
   const [tab, setTab] = useState('overview');
   const [draft, setDraft] = useState(session);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState('');
   const [filter, setFilter] = useState('all');
+  const [themeDraft, setThemeDraft] = useState(null);
+  const [themeSaving, setThemeSaving] = useState(false);
+  const [themeError, setThemeError] = useState('');
   const joinUrl = `${window.location.origin}/join/${code}`;
   const wallUrl = `${window.location.origin}/wall/${code}`;
   const remoteUrl = `${window.location.origin}/remote/${code}`;
@@ -941,6 +1071,7 @@ function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete,
           <AdminNav icon={LayoutDashboard} label="Overview" active={tab === 'overview'} onClick={() => setTab('overview')} />
           <AdminNav icon={Settings2} label="Experience" active={tab === 'experience'} onClick={() => setTab('experience')} />
           <AdminNav icon={Images} label="Artwork Title Lab" count={session.stage?.mode === 'artwork' ? artworkTitles.length || undefined : undefined} active={tab === 'artworks'} onClick={() => setTab('artworks')} />
+          <AdminNav icon={Presentation} label="PDF Presentation" count={decks.length || undefined} active={tab === 'presentation'} onClick={() => setTab('presentation')} />
           <AdminNav icon={MessageCircleMore} label="Responses" count={pending || undefined} active={tab === 'responses'} onClick={() => setTab('responses')} />
           <AdminNav icon={QrCode} label="Invite & QR" active={tab === 'invite'} onClick={() => setTab('invite')} />
         </nav>
@@ -962,7 +1093,7 @@ function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete,
         )}
 
         {tab === 'experience' && (
-          <div className="admin-content settings-layout">
+          <div className="admin-content settings-layout theme-settings-layout">
             <section className="panel settings-form">
               <div className="panel-heading"><div><p className="eyebrow">Live content</p><h2>질문과 참여 화면</h2></div></div>
               <Field label="세션 이름" value={draft.title} onChange={(value) => setDraft((current) => ({ ...current, title: value }))} />
@@ -974,7 +1105,10 @@ function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete,
               <div className="field-row"><Field label="질문 크기" type="range" value={parseInt(draft.display.questionSize, 10) || 76} onChange={(value) => setNested('display', 'questionSize', `${value}px`)} /><SelectField label="응답 공개" value={draft.moderationMode} onChange={(value) => setDraft((current) => ({ ...current, moderationMode: value }))} options={[['post', '즉시 공개'], ['pre', '승인 후 공개']]} /></div>
               <button className="primary-button save-settings" onClick={save} disabled={saving}>{saving ? <LoaderCircle className="spin" /> : <Check />} {saving ? '저장 중' : '변경사항 저장'}</button>
             </section>
-            <aside className="phone-preview"><div className="phone-frame"><div className="phone-notch" /><p className="eyebrow">Today’s question</p><h3>{draft.input.question}</h3><p>{draft.input.subtitle}</p><div className="preview-textarea">{draft.input.placeholder}</div><div className="preview-button">{draft.input.buttonText}</div></div><p>모바일 미리보기</p></aside>
+            <aside className="experience-aside">
+              <section className="panel session-theme-panel"><div className="panel-heading"><div><p className="eyebrow">Poster theme</p><h2>포스터 컬러</h2></div></div><PosterThemePicker value={themeDraft || session.theme} currentPosterUrl={session.theme?.posterUrl} onChange={(next) => { setThemeDraft(next); setThemeError(''); }} />{themeError && <p className="form-error">{themeError}</p>}<button className="primary-button" disabled={!themeDraft?.file || themeSaving} onClick={async () => { setThemeSaving(true); setThemeError(''); try { await onUpdateTheme(themeDraft); setThemeDraft(null); } catch (error) { setThemeError(error.message); } finally { setThemeSaving(false); } }}>{themeSaving ? <LoaderCircle className="spin" /> : <Check />} {themeSaving ? '적용 중' : '새 테마 적용'}</button></section>
+              <div className="phone-preview"><div className="phone-frame"><div className="phone-notch" /><p className="eyebrow">Today’s question</p><h3>{draft.input.question}</h3><p>{draft.input.subtitle}</p><div className="preview-textarea">{draft.input.placeholder}</div><div className="preview-button">{draft.input.buttonText}</div></div><p>모바일 미리보기</p></div>
+            </aside>
           </div>
         )}
 
@@ -998,6 +1132,19 @@ function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete,
           />
         )}
 
+        {tab === 'presentation' && (
+          <PdfManager
+            decks={decks}
+            activeDeckId={session.stage?.mode === 'pdf' ? session.stage.deckId : null}
+            pageNumber={session.stage?.mode === 'pdf' ? Number(session.stage.page || 1) : 1}
+            onUpload={onUploadPdf}
+            onDelete={onDeletePdf}
+            onStart={onStartPdf}
+            onPage={onPdfPage}
+            onStop={onStopStage}
+          />
+        )}
+
         {tab === 'invite' && (
           <div className="admin-content invite-layout">
             <article className="panel invite-hero"><p className="eyebrow">Invite participants</p><h2>QR을 스캔하고<br />바로 참여하세요.</h2><QrImage value={joinUrl} size={260} /><strong>{code}</strong><p>{joinUrl}</p></article>
@@ -1010,7 +1157,7 @@ function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete,
 }
 
 function adminTitle(tab) {
-  return { overview: '오늘의 세션', experience: '경험 설정', artworks: 'Artwork Title Lab', responses: '응답 관리', invite: '참여 초대' }[tab];
+  return { overview: '오늘의 세션', experience: '경험 설정', artworks: 'Artwork Title Lab', presentation: 'PDF 발표', responses: '응답 관리', invite: '참여 초대' }[tab];
 }
 
 function AdminNav({ icon, label, count, active, onClick }) {

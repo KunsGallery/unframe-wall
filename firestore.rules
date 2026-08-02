@@ -127,6 +127,11 @@ service cloud.firestore {
         allow create, update, delete: if isAdmin(app);
       }
 
+      match /decks/{deckId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isAdmin(app);
+      }
+
       match /participants/{uid} {
         allow read: if signedIn() && request.auth.uid == uid;
         allow create: if signedIn()

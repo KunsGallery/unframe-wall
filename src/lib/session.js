@@ -8,6 +8,14 @@ export const DEFAULT_SESSION = {
     phase: null,
     runId: null,
   },
+  theme: {
+    palette: ['#1648ff', '#38bda7', '#ff8e3c'],
+    accent: '#1648ff',
+    secondary: '#38bda7',
+    tertiary: '#ff8e3c',
+    background: '#f5f2ec',
+    ink: '#101522',
+  },
   createdAt: null,
   display: {
     question: '지금, 당신의 마음에 남은 장면은 무엇인가요?',
@@ -39,6 +47,7 @@ export const mergeSession = (data = {}) => ({
   display: { ...DEFAULT_SESSION.display, ...(data.display || {}) },
   input: { ...DEFAULT_SESSION.input, ...(data.input || {}) },
   stage: { ...DEFAULT_SESSION.stage, ...(data.stage || {}) },
+  theme: { ...DEFAULT_SESSION.theme, ...(data.theme || {}) },
 });
 
 export const normalizeCode = (value = '') => value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);

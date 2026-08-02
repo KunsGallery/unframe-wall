@@ -10,6 +10,7 @@ export default defineConfig({
         manualChunks: {
           firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore'],
           visuals: ['canvas-confetti', 'html-to-image', 'qrcode'],
+          pdf: ['pdfjs-dist'],
           react: ['react', 'react-dom'],
         },
       },
