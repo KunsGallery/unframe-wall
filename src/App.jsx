@@ -64,6 +64,8 @@ import {
 } from 'lucide-react';
 import { appId, auth, db, isFirebaseReady, storage } from './lib/firebase';
 import { themeStyle } from './lib/colorPalette';
+import { getPreset } from './lib/seasonal';
+import { SeasonalThemeModal, Snowfall } from './components/SeasonalTheme';
 import { inspectPdf } from './lib/pdf';
 import {
   AURA_THEMES,
@@ -567,7 +569,8 @@ export default function App() {
   const pdfPage = Math.max(1, Number(visibleSession?.stage?.page || 1));
 
   return (
-    <div className="app-shell" style={themeStyle(visibleSession?.theme)}>
+    <div className={`app-shell season-${getPreset(visibleSession?.theme)}`} style={themeStyle(visibleSession?.theme)}>
+      {visibleSession?.theme?.snow && getPreset(visibleSession.theme) === 'christmas' && ['join', 'wall'].includes(route.view) && <Snowfall count={route.view === 'wall' ? 60 : 28} />}
       {route.view === 'home' && <Home onJoin={(code) => routeTo('join', code)} onAdmin={() => routeTo('admin')} />}
       {route.view === 'join' && (
         <SessionGate session={visibleSession} code={route.code}>
@@ -883,10 +886,12 @@ function SuccessTicket({ ticket, session, onClose }) {
   const cardRef = useRef(null);
   const [saving, setSaving] = useState(false);
   const auraColor = getAuraColor(ticket.scores);
+  const isChristmas = getPreset(session.theme) === 'christmas';
 
   useEffect(() => {
-    confetti({ particleCount: 130, spread: 78, origin: { y: 0.72 }, colors: ['#1648ff', '#38bda7', '#ff8e3c', '#885cf6'] });
-  }, []);
+    const colors = isChristmas ? ['#b3122b', '#1f6f4a', '#d4a843', '#ffffff'] : ['#1648ff', '#38bda7', '#ff8e3c', '#885cf6'];
+    confetti({ particleCount: 130, spread: 78, origin: { y: 0.72 }, colors });
+  }, [isChristmas]);
 
   const save = async () => {
     if (!cardRef.current) return;
@@ -907,10 +912,11 @@ function SuccessTicket({ ticket, session, onClose }) {
     <div className="ticket-modal" role="dialog" aria-modal="true" aria-labelledby="ticket-title">
       <button className="modal-close" onClick={onClose} aria-label="닫기"><X /></button>
       <div className="ticket-intro"><CheckCircle2 /><p className="eyebrow">Your thought is now live</p><h2 id="ticket-title">생각이 공간에 도착했습니다.</h2></div>
-      <article className="aura-ticket" ref={cardRef} style={{ '--ticket-aura': auraColor }}>
+      <article className={`aura-ticket ${isChristmas ? 'holiday' : ''}`} ref={cardRef} style={{ '--ticket-aura': auraColor }}>
+        {isChristmas && <span className="holiday-stamp">Happy Holidays · {new Date().getFullYear()}</span>}
         <header><Logo /><span>#{ticket.id.slice(0, 6).toUpperCase()}</span></header>
         <div className="ticket-orb"><span /></div>
-        <div className="ticket-copy"><p>A perspective from today</p><blockquote>“{ticket.text}”</blockquote></div>
+        <div className="ticket-copy"><p>{isChristmas ? 'A warm moment of the year' : 'A perspective from today'}</p><blockquote>“{ticket.text}”</blockquote></div>
         <div className="aura-bars">
           {topAuras.map(([key, value]) => <div key={key}><span>{AURA_THEMES[key]?.label}</span><i><b style={{ width: `${value}%`, background: AURA_THEMES[key]?.color }} /></i><strong>{value}%</strong></div>)}
         </div>
@@ -1029,6 +1035,7 @@ function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete,
   const [themeDraft, setThemeDraft] = useState(null);
   const [themeSaving, setThemeSaving] = useState(false);
   const [themeError, setThemeError] = useState('');
+  const [seasonOpen, setSeasonOpen] = useState(false);
   const joinUrl = `${window.location.origin}/join/${code}`;
   const wallUrl = `${window.location.origin}/wall/${code}`;
   const remoteUrl = `${window.location.origin}/remote/${code}`;
@@ -1079,7 +1086,8 @@ function AdminConsole({ code, session, messages, onUpdate, onModerate, onDelete,
       </aside>
 
       <section className="admin-main">
-        <header className="admin-topbar"><div><p className="eyebrow">{session.title}</p><h1>{adminTitle(tab)}</h1></div><div className="top-actions"><span className={`status-pill ${session.status !== 'live' ? 'paused' : ''}`}><span /> {session.status.toUpperCase()}</span><button className="secondary-button" onClick={() => window.open(wallUrl, '_blank')}><Eye /> Live wall</button></div></header>
+        <header className="admin-topbar"><div><p className="eyebrow">{session.title}</p><h1>{adminTitle(tab)}</h1></div><div className="top-actions"><span className={`status-pill ${session.status !== 'live' ? 'paused' : ''}`}><span /> {session.status.toUpperCase()}</span><button className="secondary-button" onClick={() => setSeasonOpen(true)}><Sparkles /> 시즌 테마</button><button className="secondary-button" onClick={() => window.open(wallUrl, '_blank')}><Eye /> Live wall</button></div></header>
+        {seasonOpen && <SeasonalThemeModal session={session} onApply={onUpdate} onClose={() => setSeasonOpen(false)} />}
 
         {tab === 'overview' && (
           <div className="admin-content">
