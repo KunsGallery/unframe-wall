@@ -30,6 +30,8 @@ service cloud.firestore {
 
         allow create: if signedIn()
           && sessionData(app, code).status == 'live'
+          && request.resource.data.keys().hasOnly(['text', 'scores', 'likes', 'userId', 'status', 'createdAt'])
+          && request.resource.data.createdAt == request.time
           && request.resource.data.userId == request.auth.uid
           && request.resource.data.text is string
           && request.resource.data.text.size() > 0
@@ -48,9 +50,11 @@ service cloud.firestore {
           && (
             (
               request.resource.data.likes == resource.data.likes + 1
+              && !exists(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/likes/$(messageId))
               && existsAfter(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/likes/$(messageId))
             ) || (
               request.resource.data.likes == resource.data.likes - 1
+              && exists(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/likes/$(messageId))
               && !existsAfter(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/likes/$(messageId))
             )
           )
@@ -88,6 +92,8 @@ service cloud.firestore {
             && sessionData(app, code).stage.mode == 'artwork'
             && sessionData(app, code).stage.artworkId == artworkId
             && sessionData(app, code).stage.phase == 'collect'
+            && request.resource.data.keys().hasOnly(['text', 'artworkId', 'runId', 'userId', 'likes', 'createdAt'])
+            && request.resource.data.createdAt == request.time
             && request.resource.data.userId == request.auth.uid
             && request.resource.data.artworkId == artworkId
             && request.resource.data.runId == sessionData(app, code).stage.runId
@@ -106,9 +112,11 @@ service cloud.firestore {
             && (
               (
                 request.resource.data.likes == resource.data.likes + 1
+                && !exists(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/titleVotes/$(titleId))
                 && existsAfter(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/titleVotes/$(titleId))
               ) || (
                 request.resource.data.likes == resource.data.likes - 1
+                && exists(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/titleVotes/$(titleId))
                 && !existsAfter(/databases/$(database)/documents/artifacts/$(app)/sessions/$(code)/participants/$(request.auth.uid)/titleVotes/$(titleId))
               )
             )
