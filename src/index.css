@@ -765,3 +765,12 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 @keyframes season-pop { from { opacity: 0; transform: translateY(8px) scale(.97); } }
 @media (max-width: 480px) { .season-options { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .snowfall { display: none; } }
+
+/* Google sign-in */
+.google-button { width: 100%; min-height: 54px; display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 22px; border: 1px solid var(--line); border-radius: 12px; background: white; color: var(--ink); font-size: 14px; font-weight: 700; transition: border-color .15s, box-shadow .15s; }
+.google-button:hover:not(:disabled) { border-color: rgba(16,21,34,.25); box-shadow: 0 6px 18px rgba(16,21,34,.06); }
+.google-button:disabled { opacity: .6; }
+.login-divider { display: flex; align-items: center; gap: 12px; margin: 22px 0; color: #a0a4ad; font-size: 11px; }
+.login-divider::before, .login-divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.permission-warning p { margin: 0 0 8px; }
+.permission-warning code { display: block; margin-bottom: 8px; padding: 8px; border-radius: 6px; background: white; color: var(--ink); font: 500 11px 'DM Mono', monospace; word-break: break-all; user-select: all; }

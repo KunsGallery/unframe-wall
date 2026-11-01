@@ -17,10 +17,12 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import {
+  GoogleAuthProvider,
   onAuthStateChanged,
   signInAnonymously,
   signInWithCustomToken,
   signInWithEmailAndPassword,
+  signInWithPopup,
   signOut,
 } from 'firebase/auth';
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
@@ -947,6 +949,24 @@ function AdminLogin({ user }) {
     }
   };
 
+  const signInWithGoogle = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      await signInWithPopup(auth, provider);
+    } catch (googleError) {
+      if (googleError?.code !== 'auth/popup-closed-by-user' && googleError?.code !== 'auth/cancelled-popup-request') {
+        setError(googleError?.code === 'auth/unauthorized-domain'
+          ? '이 도메인이 Firebase 승인된 도메인에 등록되어 있지 않습니다.'
+          : 'Google 로그인에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <main className="admin-login">
       <section className="login-brand">
@@ -960,14 +980,33 @@ function AdminLogin({ user }) {
           <p className="eyebrow">Admin access</p>
           <h2>운영자 로그인</h2>
           <p className="login-description">등록된 관리자 계정으로 로그인해 주세요.</p>
+          <button type="button" className="google-button" onClick={signInWithGoogle} disabled={loading}><GoogleMark /> Google 계정으로 로그인</button>
+          <div className="login-divider"><span>또는 이메일</span></div>
           <label>이메일<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="host@unframe.kr" required /></label>
           <label>비밀번호<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••" required /></label>
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button" disabled={loading}>{loading ? <LoaderCircle className="spin" /> : <KeyRound />} 로그인</button>
-          {user && !user.isAnonymous && <p className="permission-warning">로그인은 됐지만 관리자 문서가 없습니다. Firebase의 admins 컬렉션을 확인해 주세요.</p>}
+          {user && !user.isAnonymous && (
+            <div className="permission-warning">
+              <p>{user.email} 계정은 아직 관리자로 등록되지 않았습니다. 아래 UID로 admins 문서를 만들어 주세요.</p>
+              <code>{user.uid}</code>
+              <button type="button" className="text-button" onClick={() => signOut(auth)}>다른 계정으로 로그인</button>
+            </div>
+          )}
         </form>
       </section>
     </main>
+  );
+}
+
+function GoogleMark() {
+  return (
+    <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true">
+      <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z" />
+      <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z" />
+      <path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.33z" />
+      <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z" />
+    </svg>
   );
 }
 
